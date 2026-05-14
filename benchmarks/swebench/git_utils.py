@@ -39,7 +39,20 @@ async def clone_at_commit(repo: str, commit: str, dest: Path) -> None:
 
 
 def get_diff(repo_dir: Path) -> str:
-    """Return `git diff HEAD` — all changes made since the base commit."""
+    """
+    Return all changes since the base commit, including newly created files.
+
+    `git diff HEAD` only covers tracked files. We first run `git add -N .`
+    (intent-to-add) so untracked new files are registered in the index as
+    empty blobs — making them show up in the diff without actually staging
+    their content.
+    """
+    # Register new files so they appear in the diff
+    subprocess.run(
+        ["git", "add", "-N", "."],
+        cwd=repo_dir,
+        capture_output=True,
+    )
     result = subprocess.run(
         ["git", "diff", "HEAD"],
         cwd=repo_dir,
