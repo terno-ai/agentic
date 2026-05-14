@@ -1,0 +1,5 @@
+benchmarks/results/20260514_174131_gpt-4o-mini/repos/
+__pycache__
+.env
+.venv
+

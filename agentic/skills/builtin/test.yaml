@@ -1,0 +1,21 @@
+name: test
+description: Write comprehensive tests for specified code
+args_description: "File path or function/class to test"
+read_only: false
+prompt: |
+  Write comprehensive tests for: {{args}}
+
+  Steps:
+  1. Read the target file/function fully
+  2. Identify all code paths: happy path, edge cases, error cases
+  3. Check existing test patterns in the repo for style/framework
+
+  Write tests that cover:
+  - **Happy path**: Normal expected usage
+  - **Edge cases**: Empty inputs, boundary values, zero/null/None
+  - **Error cases**: Invalid inputs, exceptions, failures
+  - **Integration**: If applicable, how this interacts with other components
+
+  Follow the existing test framework and style. Place tests in the appropriate test directory.
+  Don't mock things that don't need mocking — test real behavior where possible.
+  Each test should have a clear name describing what it tests and what outcome is expected.

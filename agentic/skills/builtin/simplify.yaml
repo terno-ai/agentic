@@ -1,0 +1,24 @@
+name: simplify
+description: Review changed code for reuse, quality, and efficiency, then fix issues
+args_description: "Optional file path to focus on"
+read_only: false
+prompt: |
+  Review the recently changed or specified code for quality issues, then fix them.
+
+  Target: {{args}}
+
+  If no target specified, look at recently modified files (`git diff --name-only HEAD`).
+
+  Check for and fix:
+  1. **Unnecessary abstractions** — premature generalization, unused parameters
+  2. **Duplication** — repeated logic that can be unified
+  3. **Complexity** — deeply nested conditions, long functions that can be split
+  4. **Dead code** — unused variables, unreachable branches, commented-out code
+  5. **Naming** — unclear variable/function names
+  6. **Imports** — unused imports, import order issues
+  7. **Error handling** — swallowed exceptions, missing validation
+
+  Make the fixes directly using Edit/Write. Don't refactor beyond what's needed —
+  fix real issues, don't invent new abstractions. Prefer deleting code over adding.
+
+  After fixing, briefly summarize what you changed and why.

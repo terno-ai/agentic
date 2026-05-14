@@ -1,0 +1,362 @@
+"""LLM clients for Anthropic and OpenAI, both emitting the same StreamEvent types."""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import AsyncIterator
+from typing import Any
+
+import anthropic
+from anthropic.types import Message
+
+
+# ---------------------------------------------------------------------------
+# Shared StreamEvent types — both clients emit these so the agent loop is
+# provider-agnostic.
+# ---------------------------------------------------------------------------
+
+class StreamEvent:
+    pass
+
+
+class TextDelta(StreamEvent):
+    def __init__(self, text: str):
+        self.text = text
+
+
+class ToolUseStart(StreamEvent):
+    def __init__(self, tool_use_id: str, tool_name: str):
+        self.tool_use_id = tool_use_id
+        self.tool_name = tool_name
+
+
+class ToolInputDelta(StreamEvent):
+    def __init__(self, tool_use_id: str, partial_json: str):
+        self.tool_use_id = tool_use_id
+        self.partial_json = partial_json
+
+
+class MessageComplete(StreamEvent):
+    """Signals the stream is done. The message attribute is provider-specific."""
+    def __init__(self, message: Any):
+        self.message = message
+
+
+class UsageInfo(StreamEvent):
+    def __init__(self, input_tokens: int, output_tokens: int,
+                 cache_read: int = 0, cache_write: int = 0):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read = cache_read
+        self.cache_write = cache_write
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+
+# ---------------------------------------------------------------------------
+# Anthropic client
+# ---------------------------------------------------------------------------
+
+class AnthropicClient:
+    def __init__(self, api_key: str | None = None, model: str = "claude-sonnet-4-6"):
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.model = model
+        self._client = anthropic.Anthropic(api_key=self.api_key)
+        self._async_client = anthropic.AsyncAnthropic(api_key=self.api_key)
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+    async def stream_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str | list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 8192,
+    ) -> AsyncIterator[StreamEvent]:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        async with self._async_client.messages.stream(**kwargs) as stream:
+            current_tool_id: str | None = None
+
+            async for event in stream:
+                if hasattr(event, "type"):
+                    if event.type == "content_block_start":
+                        block = event.content_block
+                        if block.type == "tool_use":
+                            current_tool_id = block.id
+                            yield ToolUseStart(block.id, block.name)
+                    elif event.type == "content_block_delta":
+                        delta = event.delta
+                        if hasattr(delta, "text"):
+                            yield TextDelta(delta.text)
+                        elif hasattr(delta, "partial_json") and current_tool_id:
+                            yield ToolInputDelta(current_tool_id, delta.partial_json)
+                    elif event.type == "message_start":
+                        self.total_input_tokens += event.message.usage.input_tokens
+                    elif event.type == "message_delta":
+                        if hasattr(event, "usage") and event.usage:
+                            self.total_output_tokens += event.usage.output_tokens
+
+            final_msg = await stream.get_final_message()
+            yield UsageInfo(
+                input_tokens=final_msg.usage.input_tokens,
+                output_tokens=final_msg.usage.output_tokens,
+                cache_read=getattr(final_msg.usage, "cache_read_input_tokens", 0) or 0,
+                cache_write=getattr(final_msg.usage, "cache_creation_input_tokens", 0) or 0,
+            )
+            yield MessageComplete(final_msg)
+
+    def create_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str | list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 8192,
+    ) -> Message:
+        """Synchronous — used by context summarization."""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        return self._client.messages.create(**kwargs)
+
+    @property
+    def session_tokens(self) -> int:
+        return self.total_input_tokens + self.total_output_tokens
+
+
+# ---------------------------------------------------------------------------
+# OpenAI client — same interface, different wire format
+# ---------------------------------------------------------------------------
+
+class _TextBlock:
+    """Minimal shim so context.py's `for block in response.content: block.text` works."""
+    def __init__(self, text: str):
+        self.text = text
+
+class _SyncResponse:
+    def __init__(self, text: str):
+        self.content = [_TextBlock(text)]
+
+
+def _system_to_text(system: str | list[dict[str, Any]]) -> str:
+    """Extract plain text from an Anthropic-format system prompt."""
+    if isinstance(system, str):
+        return system
+    return "\n\n".join(
+        block.get("text", "") for block in system
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+
+
+def _anthropic_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Anthropic tool schemas → OpenAI function tool schemas."""
+    result = []
+    for t in tools:
+        result.append({
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        })
+    return result
+
+
+def _anthropic_messages_to_openai(
+    messages: list[dict[str, Any]],
+    system: str | list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Convert Anthropic conversation history to OpenAI chat format.
+
+    Anthropic stores tool interaction as:
+      assistant: [{type:tool_use, id, name, input}]
+      user:      [{type:tool_result, tool_use_id, content}]
+
+    OpenAI expects:
+      assistant: {tool_calls:[{id, type:function, function:{name, arguments}}]}
+      tool:      {role:tool, tool_call_id, content}
+    """
+    result: list[dict[str, Any]] = []
+
+    # System message first
+    system_text = _system_to_text(system)
+    if system_text:
+        result.append({"role": "system", "content": system_text})
+
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+
+        if isinstance(content, str):
+            result.append({"role": role, "content": content})
+            continue
+
+        if role == "user":
+            tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+            text_blocks  = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            plain_text   = [b for b in content if isinstance(b, str)]
+
+            for tr in tool_results:
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": tr["tool_use_id"],
+                    "content": tr.get("content", ""),
+                })
+
+            text = "".join(b.get("text", "") for b in text_blocks) + "".join(plain_text)
+            if text:
+                result.append({"role": "user", "content": text})
+
+        elif role == "assistant":
+            text_parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            tool_uses  = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+            text = "".join(text_parts)
+
+            if tool_uses:
+                tool_calls = [
+                    {
+                        "id": tu["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tu["name"],
+                            "arguments": json.dumps(tu.get("input", {})),
+                        },
+                    }
+                    for tu in tool_uses
+                ]
+                openai_msg: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
+                if text:
+                    openai_msg["content"] = text
+                result.append(openai_msg)
+            else:
+                result.append({"role": "assistant", "content": text})
+
+    return result
+
+
+class OpenAIClient:
+    def __init__(self, api_key: str | None = None, model: str = "gpt-4o"):
+        import openai as _openai
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.model = model
+        self._client = _openai.OpenAI(api_key=self.api_key)
+        self._async_client = _openai.AsyncOpenAI(api_key=self.api_key)
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
+    async def stream_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str | list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 8192,
+    ) -> AsyncIterator[StreamEvent]:
+        openai_msgs = _anthropic_messages_to_openai(messages, system)
+        openai_tools = _anthropic_tools_to_openai(tools) if tools else None
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": openai_msgs,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+
+        # Track per-index tool call state across chunks
+        tool_state: dict[int, dict[str, str]] = {}  # index → {id, name}
+
+        stream = await self._async_client.chat.completions.create(**kwargs)
+
+        async for chunk in stream:
+            # Final usage chunk has no choices
+            if not chunk.choices:
+                if chunk.usage:
+                    inp = chunk.usage.prompt_tokens
+                    out = chunk.usage.completion_tokens
+                    self.total_input_tokens += inp
+                    self.total_output_tokens += out
+                    yield UsageInfo(input_tokens=inp, output_tokens=out)
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if delta.content:
+                yield TextDelta(delta.content)
+
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    # New tool call: id and name arrive in the first chunk for that index
+                    if tc_delta.id:
+                        tool_state[idx] = {"id": tc_delta.id, "name": tc_delta.function.name or ""}
+                        yield ToolUseStart(tc_delta.id, tc_delta.function.name or "")
+                    if tc_delta.function and tc_delta.function.arguments:
+                        tool_id = tool_state[idx]["id"]
+                        yield ToolInputDelta(tool_id, tc_delta.function.arguments)
+
+        yield MessageComplete(None)
+
+    def create_message(
+        self,
+        messages: list[dict[str, Any]],
+        system: str | list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 8192,
+    ) -> _SyncResponse:
+        """Synchronous — used by context summarization. Returns object compatible with Anthropic response."""
+        openai_msgs = _anthropic_messages_to_openai(messages, system)
+        openai_tools = _anthropic_tools_to_openai(tools) if tools else None
+
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": openai_msgs,
+            "max_tokens": max_tokens,
+        }
+        if openai_tools:
+            kwargs["tools"] = openai_tools
+
+        response = self._client.chat.completions.create(**kwargs)
+        text = response.choices[0].message.content or ""
+        return _SyncResponse(text)
+
+    @property
+    def session_tokens(self) -> int:
+        return self.total_input_tokens + self.total_output_tokens
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def create_llm_client(
+    provider: str,
+    model: str,
+    api_key: str = "",
+    openai_api_key: str = "",
+) -> AnthropicClient | OpenAIClient:
+    """Return the right client based on provider. Auto-detects from model name if provider is blank."""
+    from agentic.core.config import detect_provider
+    resolved = provider or detect_provider(model)
+    if resolved == "openai":
+        return OpenAIClient(api_key=openai_api_key or None, model=model)
+    return AnthropicClient(api_key=api_key or None, model=model)

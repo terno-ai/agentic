@@ -1,0 +1,20 @@
+name: init
+description: Initialize an AGENT.md file with documentation about this codebase
+args_description: ""
+read_only: true
+prompt: |
+  Analyze the current codebase and create a comprehensive AGENT.md file that documents:
+
+  1. **Project Overview** — What this project does, its main purpose
+  2. **Architecture** — Key components, directories, and how they relate
+  3. **Tech Stack** — Languages, frameworks, major dependencies
+  4. **Development Commands** — How to build, test, lint, run the project
+  5. **Key Files** — The most important files and what they do
+  6. **Conventions** — Code style, naming conventions, patterns used
+  7. **External Services** — APIs, databases, services this project depends on
+
+  Start by reading the directory structure, then key files like package.json, pyproject.toml,
+  README, and a few representative source files. Write the AGENT.md to the root of the project.
+
+  The AGENT.md should be concise but complete — it's loaded into context at the start of every
+  agent session, so it needs to give accurate orientation quickly.

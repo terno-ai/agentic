@@ -1,0 +1,28 @@
+name: security-review
+description: Security review of pending branch changes
+args_description: ""
+read_only: true
+prompt: |
+  Perform a thorough security review of the current branch's changes.
+
+  Steps:
+  1. Get changed files: `git diff main...HEAD --name-only`
+  2. Review full diff: `git diff main...HEAD`
+  3. Read each changed file in full context
+
+  Check for OWASP Top 10 and common vulnerabilities:
+  - **Injection**: SQL, command, LDAP, XSS, template injection
+  - **Authentication**: Weak auth, session fixation, insecure cookies
+  - **Authorization**: Missing access controls, IDOR, privilege escalation
+  - **Cryptography**: Weak algorithms, hardcoded secrets, insecure random
+  - **Sensitive Data**: Secrets in code, logs, error messages, URLs
+  - **XXE / SSRF**: XML parsing, URL fetching without validation
+  - **Supply Chain**: New dependencies — check for known CVEs
+  - **Race Conditions**: TOCTOU, concurrent access without locking
+  - **Deserialization**: Untrusted data deserialization
+  - **Logging**: Missing audit logs, excessive logging of sensitive data
+
+  For each finding: severity (Critical/High/Medium/Low), file:line, description,
+  exploitation scenario, and recommended fix.
+
+  Also note what looks correctly implemented (security is not just finding flaws).

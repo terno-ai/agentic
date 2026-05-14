@@ -1,0 +1,24 @@
+name: review
+description: Review a pull request or the current branch's changes
+args_description: "Optional PR number or branch name"
+read_only: true
+prompt: |
+  Review the code changes for: {{args}}
+
+  If no PR/branch specified, review the current git branch's changes vs main/master.
+
+  Steps:
+  1. Run `git diff main...HEAD` (or equivalent) to see all changes
+  2. Run `git log main...HEAD --oneline` to see commits
+  3. Read changed files in full context
+
+  Provide a structured review covering:
+  - **Summary**: What these changes do
+  - **Correctness**: Logic errors, edge cases, off-by-one errors
+  - **Security**: Potential vulnerabilities (injection, auth, secrets exposure)
+  - **Performance**: N+1 queries, inefficient algorithms, missing indexes
+  - **Tests**: Are changes tested? Are tests sufficient?
+  - **Code Quality**: Readability, naming, duplication, complexity
+  - **Breaking Changes**: API changes, migration requirements
+
+  Be specific — cite file:line for issues. Distinguish blocking issues from suggestions.
