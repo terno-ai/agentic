@@ -1,5 +1,17 @@
-benchmarks/results/20260514_174131_gpt-4o-mini/repos/
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
 .env
-.venv
 
+# Benchmark outputs — cloned repos and run results (can be gigabytes)
+benchmarks/results/
+
+# Test cache
+.pytest_cache/
+
+# macOS
+.DS_Store
