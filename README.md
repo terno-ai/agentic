@@ -1,10 +1,11 @@
 # Agentic
 
-An autonomous coding agent with memory, skills, MCP integration, context summarization, and Docker sandboxing — inspired by Claude Code. Supports both **Anthropic** (Claude) and **OpenAI** (GPT / o-series) models.
+An autonomous coding agent with memory, skills, MCP integration, context summarization, Docker sandboxing, and a persistent Python kernel — inspired by Claude Code. Supports both **Anthropic** (Claude) and **OpenAI** (GPT / o-series) models.
 
 ## Features
 
 - **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including reasoning models o1/o3/o4-mini), switchable mid-session
+- **Persistent Python Kernel** — IPython-style kernel retains variables between calls; ideal for data science; captures stdout/stderr separately; handles stdin, OOM, timeouts, and hangs
 - **Multi-user Docker Sandbox** — each user gets a dedicated, isolated container and workspace; containers persist between sessions preserving installed packages and files
 - **Interactive REPL** — readline history, tab completion, slash commands
 - **Persistent Memory** — file-based memory across sessions (user / feedback / project / reference types) with smart context retention
@@ -30,8 +31,14 @@ agentic
 export OPENAI_API_KEY=sk-...
 agentic --provider openai --model gpt-4o
 
+# With persistent Python kernel (great for data science)
+agentic --kernel
+
 # With Docker sandbox (isolated, safe execution)
 agentic --sandbox
+
+# Kernel inside sandbox (recommended for production)
+agentic --sandbox --kernel
 ```
 
 ## Usage
@@ -45,9 +52,16 @@ agentic --model gpt-4o-mini          # → OpenAI
 agentic --model o4-mini              # → OpenAI (reasoning model)
 agentic --model claude-opus-4-7      # → Anthropic
 
-# Docker sandbox — all Bash commands run inside an isolated container
+# Python kernel — variables persist between executions
+agentic --kernel
+agentic --kernel --model gpt-4o
+
+# Docker sandbox — all commands run inside an isolated container
 agentic --sandbox
 agentic --sandbox --model gpt-4o
+
+# Kernel + sandbox (kernel runs inside the container)
+agentic --sandbox --kernel
 
 # Multi-user sandbox — each user gets an isolated container and workspace
 agentic --sandbox --user alice
@@ -58,6 +72,7 @@ AGENTIC_USER=alice agentic --sandbox   # via env var
 agentic run "explain this codebase"
 agentic run --provider openai --model gpt-4o "review the auth module"
 agentic run --sandbox --user alice "build the dashboard"
+agentic run --kernel "load sales.csv and plot monthly revenue"
 
 # Switch provider or model mid-session (REPL commands)
 /model gpt-4o
@@ -98,6 +113,67 @@ agentic config model claude-sonnet-4-6 --global
 | `/clear` | Clear conversation history |
 | `/! <cmd>` or `!<cmd>` | Run a shell command directly |
 | `/exit` or Ctrl+D | Exit |
+
+## Python Kernel
+
+When started with `--kernel`, the agent has access to a persistent Python interpreter that retains all variables between calls — no need to write `.py` files or reload data on every step.
+
+```bash
+agentic --kernel                    # local kernel
+agentic --sandbox --kernel          # kernel inside Docker sandbox (recommended)
+agentic --kernel --model gpt-4o
+```
+
+### What it gives you
+
+- **Variable persistence** — define a DataFrame once, use it across many cells
+- **Separate stdout/stderr** — each captured and returned independently
+- **Return value capture** — the last expression's value is shown (like a Jupyter cell)
+- **stdin support** — pass expected `input()` answers via the `stdin` parameter
+- **Memory monitoring** — warns at 80% of limit; structured OOM error with remediation steps
+- **Timeout enforcement** — execution interrupted cleanly; agent can retry or restart
+- **Hang recovery** — watchdog detects no-heartbeat for 30s and auto-restarts
+- **inspect action** — list all in-scope variables with types, shapes, and sizes
+
+### PythonKernel tool actions
+
+| Action | Description |
+|---|---|
+| `execute` | Run Python code; returns stdout, stderr, result, and memory usage |
+| `restart` | Clear all variables and reset the interpreter |
+| `inspect` | List variables in scope with type, repr, and size |
+| `interrupt` | Send KeyboardInterrupt to a running or hung execution |
+
+### Providing stdin
+
+If your code calls `input()`, always pass expected answers via `stdin`:
+
+```
+PythonKernel(action="execute", code="name = input('Name: ')\nprint(name)", stdin=["Alice"])
+```
+
+### Handling errors
+
+| Situation | Agent action |
+|---|---|
+| OOM error | `del large_df` or process in chunks, then retry; or `restart` |
+| Timeout | `interrupt` to cancel; `restart` if still hung |
+| Unresponsive | Kernel auto-restarts; all variables lost |
+
+### Configuration
+
+```json
+{
+  "kernel": {
+    "enabled": false,
+    "memory_limit_mb": 512,
+    "default_timeout_s": 60,
+    "watchdog_timeout_s": 30,
+    "max_output_chars": 10000,
+    "startup_code": "import pandas as pd; import numpy as np"
+  }
+}
+```
 
 ## Docker Sandbox
 
@@ -189,6 +265,11 @@ Settings are layered: `~/.agentic/settings.json` (global) → `.agentic/settings
   "model": "claude-sonnet-4-6",
   "provider": "anthropic",
   "openai_api_key": "",
+  "kernel": {
+    "enabled": false,
+    "memory_limit_mb": 512,
+    "default_timeout_s": 60
+  },
   "sandbox": {
     "enabled": false,
     "memory_limit": "512m",
@@ -295,6 +376,7 @@ agentic/
 ├── tools/         # Read, Write, Edit, Bash, WebFetch, WebSearch, Task*, Agent
 ├── memory/        # Persistent memory with MEMORY.md index
 ├── skills/        # Slash-command skills (YAML) + built-ins
+├── kernel/        # Persistent Python kernel (worker, manager, tool, config)
 ├── mcp/           # MCP stdio client + tool bridge
 ├── permissions/   # Allow/deny rule engine
 ├── hooks/         # Event-driven shell hooks
@@ -312,12 +394,13 @@ benchmarks/
     └── report.py            # Results summary
 
 Dockerfile.sandbox           # Sandbox container image
+specs/                       # Feature specifications
 ```
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest                  # run all tests (126 passing)
+pytest                  # run all tests (157 passing)
 ruff check agentic/     # lint
 ```
