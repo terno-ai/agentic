@@ -312,7 +312,7 @@ Settings are layered: `~/.agentic/settings.json` (global) → `.agentic/settings
 | `OPENAI_API_KEY` | OpenAI API key |
 | `AGENTIC_MODEL` | Override the active model |
 | `AGENTIC_PROVIDER` | Override the active provider (`anthropic` or `openai`) |
-| `AGENTIC_USER` | Override the sandbox user ID (default: system username) |
+| `AGENTIC_USER` | User ID for memory, history, and sandbox isolation (default: system username) |
 
 ## Memory System
 
@@ -325,7 +325,28 @@ The agent automatically saves important context across sessions. Four memory typ
 | `project` | Ongoing work, goals, deadlines — platform, language, entry point |
 | `reference` | Pointers to external systems/docs |
 
-Project facts (platform, language, framework, entry point) are saved immediately when learned so they survive context summarization. Memories live at `~/.agentic/projects/<hash>/memory/`.
+Project facts (platform, language, framework, entry point) are saved immediately when learned so they survive context summarization.
+
+### Per-user isolation
+
+Memory is fully isolated per user. Two users working on the same project never see each other's memories, preferences, or REPL history.
+
+```
+~/.agentic/users/
+├── alice/
+│   ├── history                              ← alice's REPL command history
+│   └── projects/<hash>/memory/             ← alice's memories for this project
+│       ├── MEMORY.md
+│       ├── user_alice_prefs.md
+│       └── project_goals.md
+└── bob/
+    ├── history                              ← bob's REPL command history
+    └── projects/<hash>/memory/             ← bob's memories (different hash)
+        ├── MEMORY.md
+        └── feedback_correction.md
+```
+
+The hash is derived from `user_id + project_dir`, so Alice and Bob working on the exact same directory get different hashes and never share memory files. The active user is resolved from `--user` flag → `AGENTIC_USER` env var → system username.
 
 ## MCP Servers
 
@@ -401,6 +422,6 @@ specs/                       # Feature specifications
 
 ```bash
 pip install -e ".[dev]"
-pytest                  # run all tests (157 passing)
+pytest                  # run all tests (160 passing)
 ruff check agentic/     # lint
 ```
