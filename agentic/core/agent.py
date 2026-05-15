@@ -158,6 +158,9 @@ class AgentLoop:
         from agentic.tools.bash import BashTool
         from agentic.tools.file_tools import ReadTool, WriteTool, EditTool
         from agentic.sandbox.sandboxed_bash import SandboxedBashTool
+        from agentic.sandbox.sandboxed_file_tools import (
+            SandboxedReadTool, SandboxedWriteTool, SandboxedEditTool,
+        )
         from agentic.tools.web_tools import WebFetchTool, WebSearchTool
         from agentic.tools.task_tools import (
             TaskCreateTool, TaskGetTool, TaskListTool,
@@ -166,17 +169,23 @@ class AgentLoop:
         from agentic.tools.agent_tool import AgentTool
         from agentic.tools.notification import AskUserQuestionTool, PushNotificationTool
 
-        bash_tool = (
-            SandboxedBashTool(self._sandbox)
-            if self._sandbox is not None
-            else BashTool(cwd=Path.cwd())
-        )
+        if self._sandbox is not None:
+            workspace = self._sandbox._workspace
+            bash_tool  = SandboxedBashTool(self._sandbox)
+            read_tool  = SandboxedReadTool(workspace)
+            write_tool = SandboxedWriteTool(workspace)
+            edit_tool  = SandboxedEditTool(workspace)
+        else:
+            bash_tool  = BashTool(cwd=Path.cwd())
+            read_tool  = ReadTool()
+            write_tool = WriteTool()
+            edit_tool  = EditTool()
 
         all_tools = [
             bash_tool,
-            ReadTool(),
-            WriteTool(),
-            EditTool(),
+            read_tool,
+            write_tool,
+            edit_tool,
             WebFetchTool(),
             WebSearchTool(),
             TaskCreateTool(),
@@ -217,7 +226,10 @@ class AgentLoop:
                 self._renderer.print_system(f"MCP: loaded {len(mcp_tools)} tools")
 
     def _build_system_prompt(self) -> str | list[dict[str, Any]]:
-        cwd = str(Path.cwd())
+        # Inside the sandbox the agent always works in /workspace; outside it
+        # uses the real host path. Keeping cwd consistent prevents the agent
+        # from mixing /workspace and host paths in the same session.
+        cwd = "/workspace" if self._sandbox is not None else str(Path.cwd())
 
         agent_md_path = Path.cwd() / "AGENT.md"
         agent_md = (

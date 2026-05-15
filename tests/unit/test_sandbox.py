@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from agentic.core.config import SandboxConfig
 from agentic.sandbox.docker_sandbox import _extract_sentinel, _quote, DockerSandbox
 from agentic.sandbox.sandboxed_bash import SandboxedBashTool
+from agentic.sandbox.sandboxed_file_tools import _remap, SandboxedWriteTool, SandboxedReadTool, SandboxedEditTool
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +82,77 @@ def test_quote_with_single_quote():
     assert result != f"'/it's here'"  # raw unescaped would be invalid shell
     # Shell escape sequence '\'' must be present
     assert "'\\''" in result
+
+
+# ---------------------------------------------------------------------------
+# Path remapping (_remap and sandboxed file tools)
+# ---------------------------------------------------------------------------
+
+def test_remap_workspace_root(tmp_path):
+    assert _remap("/workspace", tmp_path) == str(tmp_path)
+
+def test_remap_workspace_file(tmp_path):
+    assert _remap("/workspace/game.py", tmp_path) == str(tmp_path / "game.py")
+
+def test_remap_workspace_nested(tmp_path):
+    assert _remap("/workspace/src/main.py", tmp_path) == str(tmp_path / "src" / "main.py")
+
+def test_remap_non_workspace_path_unchanged(tmp_path):
+    assert _remap("/tmp/other.py", tmp_path) == "/tmp/other.py"
+
+def test_remap_relative_path_unchanged(tmp_path):
+    assert _remap("game.py", tmp_path) == "game.py"
+
+
+class TestSandboxedWriteTool:
+    @pytest.mark.asyncio
+    async def test_workspace_path_remapped(self, tmp_path):
+        tool = SandboxedWriteTool(workspace=tmp_path)
+        result = await tool.execute(
+            file_path="/workspace/hello.py",
+            content="print('hello')\n",
+        )
+        assert not result.is_error
+        assert (tmp_path / "hello.py").exists()
+        assert (tmp_path / "hello.py").read_text() == "print('hello')\n"
+
+    @pytest.mark.asyncio
+    async def test_host_path_unchanged(self, tmp_path):
+        tool = SandboxedWriteTool(workspace=tmp_path)
+        dest = tmp_path / "direct.py"
+        result = await tool.execute(file_path=str(dest), content="x = 1\n")
+        assert not result.is_error
+        assert dest.exists()
+
+
+class TestSandboxedReadTool:
+    @pytest.mark.asyncio
+    async def test_workspace_path_remapped(self, tmp_path):
+        (tmp_path / "data.py").write_text("x = 42\n")
+        tool = SandboxedReadTool(workspace=tmp_path)
+        result = await tool.execute(file_path="/workspace/data.py")
+        assert not result.is_error
+        assert "42" in result.content
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_workspace_file(self, tmp_path):
+        tool = SandboxedReadTool(workspace=tmp_path)
+        result = await tool.execute(file_path="/workspace/missing.py")
+        assert result.is_error
+
+
+class TestSandboxedEditTool:
+    @pytest.mark.asyncio
+    async def test_workspace_path_remapped(self, tmp_path):
+        (tmp_path / "mod.py").write_text("x = 1\n")
+        tool = SandboxedEditTool(workspace=tmp_path)
+        result = await tool.execute(
+            file_path="/workspace/mod.py",
+            old_string="x = 1",
+            new_string="x = 99",
+        )
+        assert not result.is_error
+        assert (tmp_path / "mod.py").read_text() == "x = 99\n"
 
 
 # ---------------------------------------------------------------------------
