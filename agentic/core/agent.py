@@ -303,10 +303,14 @@ You have a persistent Python kernel (PythonKernel tool). Variables survive betwe
 **Key rules:**
 - If code calls input(), always pass answers via the `stdin` parameter.
 - On OOM: `del large_variable` then retry, or use action='restart'.
-- On timeout/hang: action='interrupt', then action='restart' if still stuck.
+- On timeout: **retry the same code with a larger timeout** — do not give up.
+  Estimate how long the task needs and pass that as the `timeout` parameter:
+    PythonKernel(action="execute", code="...", timeout=300)
+  Use timeout=0 to disable the limit entirely for very long tasks (training, large downloads).
+- If the kernel is truly hung (not just slow): action='interrupt', then action='restart'.
 - Use action='inspect' to see what variables are in scope.
 
-Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s
+Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s (override per-call with timeout=N)
 """
 
         if settings.plan_mode:
