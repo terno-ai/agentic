@@ -9,16 +9,30 @@ if TYPE_CHECKING:
     from agentic.core.llm import AnthropicClient
 
 SUMMARIZE_PROMPT = """Produce a concise but complete summary of the conversation so far.
-Include:
-- What the user asked or is trying to accomplish
-- Key decisions made and their rationale
-- Files read or modified (with relevant details)
-- Commands executed and their output (briefly)
-- Current state and what was last being worked on
-- Any important context, errors, or constraints discovered
 
-Write in past tense, structured paragraphs. Be specific enough that work can resume seamlessly.
-Limit to 2000 tokens."""
+You MUST include ALL of the following — missing any one will cause the agent to lose context:
+
+1. **Goal** — What the user is trying to build or accomplish.
+
+2. **Project facts** (CRITICAL — never omit these):
+   - Platform / target environment (browser, mobile, server, CLI, desktop, …)
+   - Language(s) and framework(s) in use (JavaScript, Python, React, Django, …)
+   - Entry point and key files (index.html, main.py, App.tsx, …)
+   - Any constraints the user stated (no backend, offline-only, specific library, …)
+
+3. **Work done so far** — Files created or modified (with their paths and purpose).
+
+4. **Commands run** and what their output showed (briefly).
+
+5. **Current state** — What was last being worked on, what is done, what is left.
+
+6. **Decisions and rationale** — Any choices made and why.
+
+7. **Errors or blockers** encountered and how they were resolved (or not).
+
+Write in past tense, structured paragraphs. Be specific — vague summaries cause the agent to
+make wrong assumptions (e.g., looking for main.py in a browser-only project).
+Limit to 2500 tokens."""
 
 
 class ContextManager:
