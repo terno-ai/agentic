@@ -31,6 +31,7 @@ def main(
     project_dir: Optional[Path] = typer.Option(None, "--dir", "-d", help="Project directory"),
     plan_mode: bool = typer.Option(False, "--plan", "-p", help="Start in plan mode"),
     sandbox: bool = typer.Option(False, "--sandbox", "-s", help="Run commands in Docker sandbox"),
+    user: Optional[str] = typer.Option(None, "--user", "-u", help="User ID for sandbox isolation (default: system username)"),
     version: bool = typer.Option(False, "--version", "-v", help="Show version"),
 ):
     """Start the interactive agent REPL."""
@@ -43,7 +44,7 @@ def main(
         return
 
     asyncio.run(_run_repl(model=model, provider=provider, project_dir=project_dir,
-                          plan_mode=plan_mode, sandbox=sandbox))
+                          plan_mode=plan_mode, sandbox=sandbox, user_id=user))
 
 
 async def _run_repl(
@@ -52,12 +53,17 @@ async def _run_repl(
     project_dir: Path | None = None,
     plan_mode: bool = False,
     sandbox: bool = False,
+    user_id: str | None = None,
 ) -> None:
+    import getpass
     from agentic.core.agent import AgentLoop
     from agentic.core.config import ConfigManager, detect_provider
     from agentic.hooks.events import HookEvent
     from agentic.ui.renderer import Renderer
     from agentic.ui.repl import REPL
+
+    # Resolve user identity — explicit flag > env var > system username
+    resolved_user = user_id or os.environ.get("AGENTIC_USER") or getpass.getuser()
 
     config = ConfigManager(project_dir or Path.cwd())
 
@@ -75,11 +81,17 @@ async def _run_repl(
     if sandbox or config.settings.sandbox.enabled:
         from agentic.sandbox.docker_sandbox import DockerSandbox, DockerNotAvailable
         sb_cfg = config.settings.sandbox
-        sandbox_instance = DockerSandbox(sb_cfg, workspace=Path.cwd())
+        sandbox_instance = DockerSandbox(sb_cfg, user_id=resolved_user)
         try:
-            renderer.print_system("Starting sandbox container...")
+            renderer.print_system(
+                f"Starting sandbox for user '{sandbox_instance.user_id}' "
+                f"(workspace: {sandbox_instance.workspace}) ..."
+            )
             await sandbox_instance.start()
-            renderer.print_system(f"Sandbox ready ({sb_cfg.image}  mem={sb_cfg.memory_limit}  net={sb_cfg.network})")
+            renderer.print_system(
+                f"Sandbox ready  container={sandbox_instance.container_name}  "
+                f"mem={sb_cfg.memory_limit}  net={sb_cfg.network}"
+            )
         except DockerNotAvailable as e:
             renderer.print_error(str(e))
             renderer.print_system("Falling back to host execution.")
@@ -93,6 +105,7 @@ async def _run_repl(
         model=model,
         renderer=renderer,
         sandbox=sandbox_instance,
+        user_id=resolved_user,
     )
 
     await agent._hook_mgr.fire(HookEvent.AGENT_START, {"project_dir": str(Path.cwd())})
@@ -120,9 +133,10 @@ def run(
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use"),
     provider: Optional[str] = typer.Option(None, "--provider", help="Provider: anthropic or openai"),
     project_dir: Optional[Path] = typer.Option(None, "--dir", help="Project directory"),
+    user: Optional[str] = typer.Option(None, "--user", "-u", help="User ID for sandbox isolation"),
 ):
     """Run a single prompt non-interactively."""
-    asyncio.run(_run_once(prompt, model=model, provider=provider, project_dir=project_dir))
+    asyncio.run(_run_once(prompt, model=model, provider=provider, project_dir=project_dir, user_id=user))
 
 
 async def _run_once(
@@ -130,11 +144,14 @@ async def _run_once(
     model: str | None = None,
     provider: str | None = None,
     project_dir: Path | None = None,
+    user_id: str | None = None,
 ) -> None:
+    import getpass
     from agentic.core.agent import AgentLoop
     from agentic.core.config import ConfigManager
     from agentic.ui.renderer import Renderer
 
+    resolved_user = user_id or os.environ.get("AGENTIC_USER") or getpass.getuser()
     config = ConfigManager(project_dir or Path.cwd())
     if model:
         config.save_global(model=model)
@@ -142,7 +159,7 @@ async def _run_once(
         config.save_global(provider=provider)
 
     renderer = Renderer()
-    agent = AgentLoop(config=config, model=model, renderer=renderer)
+    agent = AgentLoop(config=config, model=model, renderer=renderer, user_id=resolved_user)
     await agent.start_mcp_servers()
     await agent.run_turn(prompt)
     await agent.shutdown()

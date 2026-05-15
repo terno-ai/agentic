@@ -49,9 +49,15 @@ agentic --model claude-opus-4-7      # → Anthropic
 agentic --sandbox
 agentic --sandbox --model gpt-4o
 
+# Multi-user sandbox — each user gets an isolated container and workspace
+agentic --sandbox --user alice
+agentic --sandbox --user bob
+AGENTIC_USER=alice agentic --sandbox   # via env var
+
 # Run a single prompt non-interactively
 agentic run "explain this codebase"
 agentic run --provider openai --model gpt-4o "review the auth module"
+agentic run --sandbox --user alice "build the dashboard"
 
 # Switch provider or model mid-session (REPL commands)
 /model gpt-4o
@@ -95,19 +101,39 @@ agentic config model claude-sonnet-4-6 --global
 
 ## Docker Sandbox
 
-When started with `--sandbox`, all Bash commands run inside an isolated Docker container instead of the host shell. The project directory is mounted at `/workspace`.
+When started with `--sandbox`, all shell commands and file operations run inside an isolated Docker container. Each user gets their own container and workspace — fully isolated from other users.
 
 ```bash
-# Start with sandbox
+# Single user
 agentic --sandbox
 
-# Build the image manually (done automatically on first --sandbox run)
+# Multi-user — each gets a separate container and workspace
+agentic --sandbox --user alice
+agentic --sandbox --user bob
+AGENTIC_USER=charlie agentic --sandbox
+
+# Build the image manually (auto-built on first run)
 docker build -f Dockerfile.sandbox -t agentic-sandbox:latest .
 ```
 
-The sandbox container includes Python 3, Node.js 20, curl/wget, git, ffmpeg, ripgrep, and build tools. It runs as a non-root user.
+### Per-user isolation
 
-**Configuration** (in `.agentic/settings.json`):
+Each user's workspace lives at `~/.agentic/users/<user_id>/workspace/` and is mounted as `/workspace` inside their container. Containers are named `agentic-user-<user_id>`.
+
+```
+~/.agentic/users/
+├── alice/workspace/    ← /workspace in alice's container
+├── bob/workspace/      ← /workspace in bob's container
+└── charlie/workspace/
+```
+
+Containers **persist between sessions** — reconnecting reuses the existing container instantly, preserving all installed packages and filesystem state. Use `docker stop agentic-user-alice` to pause, `docker rm -f agentic-user-alice` to destroy.
+
+### What's pre-installed
+
+Python 3, pip, Node.js 20, npm, curl, wget, git, ffmpeg, ripgrep, build tools, Cairo/Pango/LaTeX C libraries (so `pip install manim` works out of the box), and passwordless sudo for anything else.
+
+### Configuration
 
 ```json
 {
@@ -117,16 +143,17 @@ The sandbox container includes Python 3, Node.js 20, curl/wget, git, ffmpeg, rip
     "memory_limit": "512m",
     "cpu_limit": 1.0,
     "network": "bridge",
-    "auto_build": true
+    "auto_build": true,
+    "users_workspace_root": "~/.agentic/users"
   }
 }
 ```
 
-Set `"network": "none"` to block all internet access inside the sandbox.
+Set `"network": "none"` to block internet access. Set `"memory_limit": "2g"` for heavier workloads.
 
-**What persists between commands:**  `cd` changes carry over — the working directory is tracked across calls, so multi-step workflows behave naturally.
+**`cd` persists between commands** — working directory is tracked across calls so multi-step workflows behave naturally.
 
-**What stays isolated:** the host filesystem (only the project dir is mounted), host processes, and host network stack are all invisible to the container.
+**File tools (Read/Write/Edit) are sandbox-aware** — `/workspace/...` paths are automatically remapped to the user's host workspace, so the agent works with consistent paths regardless of tool used.
 
 ## Built-in Skills
 

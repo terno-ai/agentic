@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentic.core.config import SandboxConfig
-from agentic.sandbox.docker_sandbox import _extract_sentinel, _quote, DockerSandbox
+from agentic.sandbox.docker_sandbox import _extract_sentinel, _quote, _sanitize_user_id, DockerSandbox
 from agentic.sandbox.sandboxed_bash import SandboxedBashTool
 from agentic.sandbox.sandboxed_file_tools import _remap, SandboxedWriteTool, SandboxedReadTool, SandboxedEditTool
 
@@ -215,9 +215,9 @@ class TestSandboxedBashTool:
 # ---------------------------------------------------------------------------
 
 class TestDockerSandboxUnit:
-    def _make_sandbox(self, tmp_path):
+    def _make_sandbox(self, tmp_path, user_id="testuser"):
         cfg = SandboxConfig(auto_build=False)
-        return DockerSandbox(cfg, workspace=tmp_path)
+        return DockerSandbox(cfg, user_id=user_id, workspace=tmp_path)
 
     @pytest.mark.asyncio
     async def test_run_raises_if_not_started(self, tmp_path):
@@ -264,6 +264,66 @@ class TestDockerSandboxUnit:
 
 
 # ---------------------------------------------------------------------------
+# Multi-user sandbox — user_id, per-user workspace, container naming
+# ---------------------------------------------------------------------------
+
+def test_sanitize_user_id_simple():
+    assert _sanitize_user_id("alice") == "alice"
+
+def test_sanitize_user_id_email():
+    assert _sanitize_user_id("alice@example.com") == "alice-example-com"
+
+def test_sanitize_user_id_uppercase():
+    assert _sanitize_user_id("BobSmith") == "bobsmith"
+
+def test_sanitize_user_id_special_chars():
+    # strip("-") removes leading/trailing dashes so trailing ! becomes dropped
+    assert _sanitize_user_id("user name!") == "user-name"
+
+def test_sanitize_user_id_empty_falls_back():
+    assert _sanitize_user_id("") == "default"
+
+
+def test_per_user_workspace_path(tmp_path):
+    cfg = SandboxConfig(auto_build=False, users_workspace_root=str(tmp_path))
+    sb = DockerSandbox(cfg, user_id="alice")
+    assert sb.workspace == tmp_path / "alice" / "workspace"
+
+def test_per_user_workspace_different_users(tmp_path):
+    cfg = SandboxConfig(auto_build=False, users_workspace_root=str(tmp_path))
+    sb_alice = DockerSandbox(cfg, user_id="alice")
+    sb_bob   = DockerSandbox(cfg, user_id="bob")
+    assert sb_alice.workspace != sb_bob.workspace
+    assert "alice" in str(sb_alice.workspace)
+    assert "bob"   in str(sb_bob.workspace)
+
+def test_container_name_is_deterministic(tmp_path):
+    cfg = SandboxConfig(auto_build=False, users_workspace_root=str(tmp_path))
+    sb1 = DockerSandbox(cfg, user_id="alice")
+    sb2 = DockerSandbox(cfg, user_id="alice")
+    # Same user always gets the same container name
+    assert sb1.container_name == sb2.container_name == "agentic-user-alice"
+
+def test_container_name_differs_per_user(tmp_path):
+    cfg = SandboxConfig(auto_build=False, users_workspace_root=str(tmp_path))
+    sb_alice = DockerSandbox(cfg, user_id="alice")
+    sb_bob   = DockerSandbox(cfg, user_id="bob")
+    assert sb_alice.container_name != sb_bob.container_name
+
+def test_explicit_workspace_overrides_user_path(tmp_path):
+    explicit = tmp_path / "custom"
+    cfg = SandboxConfig(auto_build=False)
+    sb = DockerSandbox(cfg, user_id="alice", workspace=explicit)
+    assert sb.workspace == explicit.resolve()
+
+def test_workspace_created_on_start_not_at_init(tmp_path):
+    cfg = SandboxConfig(auto_build=False, users_workspace_root=str(tmp_path))
+    sb = DockerSandbox(cfg, user_id="newuser")
+    # Workspace dir should NOT exist yet (no start() called)
+    assert not sb.workspace.exists()
+
+
+# ---------------------------------------------------------------------------
 # Integration test (skipped if Docker unavailable)
 # ---------------------------------------------------------------------------
 
@@ -276,19 +336,19 @@ class TestDockerSandboxIntegration:
     @pytest.mark.asyncio
     async def test_echo_command(self, tmp_path):
         cfg = SandboxConfig(auto_build=False, image="ubuntu:22.04")
-        sb = DockerSandbox(cfg, workspace=tmp_path)
+        sb = DockerSandbox(cfg, user_id="test-echo", workspace=tmp_path)
         await sb.start()
         try:
             output, rc = await sb.run("echo hello from sandbox")
             assert rc == 0
             assert "hello from sandbox" in output
         finally:
-            await sb.stop()
+            await sb.destroy()
 
     @pytest.mark.asyncio
     async def test_cd_persists(self, tmp_path):
         cfg = SandboxConfig(auto_build=False, image="ubuntu:22.04")
-        sb = DockerSandbox(cfg, workspace=tmp_path)
+        sb = DockerSandbox(cfg, user_id="test-cd", workspace=tmp_path)
         await sb.start()
         try:
             await sb.run("cd /tmp")
@@ -296,15 +356,31 @@ class TestDockerSandboxIntegration:
             output, rc = await sb.run("pwd")
             assert "/tmp" in output
         finally:
-            await sb.stop()
+            await sb.destroy()
 
     @pytest.mark.asyncio
     async def test_nonzero_exit(self, tmp_path):
         cfg = SandboxConfig(auto_build=False, image="ubuntu:22.04")
-        sb = DockerSandbox(cfg, workspace=tmp_path)
+        sb = DockerSandbox(cfg, user_id="test-exit", workspace=tmp_path)
         await sb.start()
         try:
             _, rc = await sb.run("exit 42")
             assert rc == 42
         finally:
-            await sb.stop()
+            await sb.destroy()
+
+    @pytest.mark.asyncio
+    async def test_container_reuse_same_user(self, tmp_path):
+        """Two DockerSandbox instances for the same user share the same container."""
+        cfg = SandboxConfig(auto_build=False, image="ubuntu:22.04")
+        sb1 = DockerSandbox(cfg, user_id="test-reuse", workspace=tmp_path)
+        sb2 = DockerSandbox(cfg, user_id="test-reuse", workspace=tmp_path)
+        await sb1.start()
+        try:
+            # Starting sb2 should attach to the already-running container
+            await sb2.start()
+            assert sb1.container_name == sb2.container_name
+            out, _ = await sb2.run("echo reused")
+            assert "reused" in out
+        finally:
+            await sb1.destroy()

@@ -114,6 +114,7 @@ class AgentLoop:
         is_subagent: bool = False,
         renderer: Any | None = None,
         sandbox: Any | None = None,  # DockerSandbox instance, or None for host execution
+        user_id: str = "default",
     ):
         self._config = config
         self._is_subagent = is_subagent
@@ -256,8 +257,8 @@ class AgentLoop:
             system_text += f"""
 
 ## Sandbox environment
-You are running inside a Docker sandbox container. The host filesystem is NOT accessible.
-Your working directory is /workspace (the user's project, mounted read-write).
+You are running inside a dedicated Docker sandbox container (user: {self._sandbox.user_id}).
+The host filesystem is NOT accessible. Your working directory is /workspace (mounted read-write).
 
 **Pre-installed system libraries** (no sudo needed for these):
 - Python 3 + pip, Node.js 20 + npm

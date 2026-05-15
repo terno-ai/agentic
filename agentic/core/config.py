@@ -49,6 +49,9 @@ class SandboxConfig(BaseModel):
     network: str = "bridge"           # "bridge" (internet) | "none" (offline)
     auto_build: bool = True           # Build image automatically if not found
     dockerfile: str = "Dockerfile.sandbox"
+    # Multi-user: each user gets an isolated workspace under this root.
+    # Per-user path: <users_workspace_root>/<user_id>/workspace/
+    users_workspace_root: str = str(Path.home() / ".agentic" / "users")
 
 
 class Settings(BaseModel):
