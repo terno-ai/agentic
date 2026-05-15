@@ -114,11 +114,13 @@ class Renderer:
     def print_separator(self) -> None:
         self.console.print("─" * 60, style="dim")
 
-    def print_welcome(self, model: str, version: str, provider: str = "anthropic") -> None:
+    def print_welcome(self, model: str, version: str, provider: str = "anthropic",
+                      sandbox: bool = False) -> None:
+        sandbox_line = "  Sandbox: [green]ON[/green] (Docker)" if sandbox else ""
         self.console.print(
             Panel(
                 f"[bold]Agentic[/bold] v{version} — autonomous coding agent\n"
-                f"Provider: [cyan]{provider}[/cyan]  Model: [cyan]{model}[/cyan]\n"
+                f"Provider: [cyan]{provider}[/cyan]  Model: [cyan]{model}[/cyan]{sandbox_line}\n"
                 f"Type [yellow]/help[/yellow] for commands, [yellow]/skills[/yellow] to list skills\n"
                 f"[yellow]/provider openai[/yellow] or [yellow]/provider anthropic[/yellow] to switch",
                 border_style="cyan",

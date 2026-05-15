@@ -41,6 +41,16 @@ class HookConfig(BaseModel):
     command: str
 
 
+class SandboxConfig(BaseModel):
+    enabled: bool = False
+    image: str = "agentic-sandbox:latest"
+    memory_limit: str = "512m"        # Docker memory limit (e.g. 512m, 2g)
+    cpu_limit: float = 1.0            # Docker --cpus value
+    network: str = "bridge"           # "bridge" (internet) | "none" (offline)
+    auto_build: bool = True           # Build image automatically if not found
+    dockerfile: str = "Dockerfile.sandbox"
+
+
 class Settings(BaseModel):
     model: str = DEFAULT_MODEL
     max_tokens: int = 8192
@@ -58,6 +68,7 @@ class Settings(BaseModel):
     api_key: str = ""
     openai_api_key: str = ""
     provider: str = ""  # "anthropic" | "openai" — auto-detected from model name if blank
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

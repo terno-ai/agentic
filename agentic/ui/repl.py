@@ -76,7 +76,8 @@ class REPL:
         settings = self._agent._config.settings
         from agentic.core.config import detect_provider
         provider = settings.provider or detect_provider(settings.model)
-        self._renderer.print_welcome(settings.model, "0.1.0", provider=provider)
+        sandbox_on = self._agent._sandbox is not None
+        self._renderer.print_welcome(settings.model, "0.1.0", provider=provider, sandbox=sandbox_on)
 
         while True:
             try:

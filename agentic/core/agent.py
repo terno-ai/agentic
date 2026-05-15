@@ -113,10 +113,12 @@ class AgentLoop:
         allowed_tools: list[str] | None = None,
         is_subagent: bool = False,
         renderer: Any | None = None,
+        sandbox: Any | None = None,  # DockerSandbox instance, or None for host execution
     ):
         self._config = config
         self._is_subagent = is_subagent
         self._renderer = renderer
+        self._sandbox = sandbox
 
         settings = config.settings
         resolved_model = model or settings.model
@@ -155,6 +157,7 @@ class AgentLoop:
     def _setup_tools(self) -> None:
         from agentic.tools.bash import BashTool
         from agentic.tools.file_tools import ReadTool, WriteTool, EditTool
+        from agentic.sandbox.sandboxed_bash import SandboxedBashTool
         from agentic.tools.web_tools import WebFetchTool, WebSearchTool
         from agentic.tools.task_tools import (
             TaskCreateTool, TaskGetTool, TaskListTool,
@@ -163,8 +166,14 @@ class AgentLoop:
         from agentic.tools.agent_tool import AgentTool
         from agentic.tools.notification import AskUserQuestionTool, PushNotificationTool
 
+        bash_tool = (
+            SandboxedBashTool(self._sandbox)
+            if self._sandbox is not None
+            else BashTool(cwd=Path.cwd())
+        )
+
         all_tools = [
-            BashTool(cwd=Path.cwd()),
+            bash_tool,
             ReadTool(),
             WriteTool(),
             EditTool(),
@@ -484,3 +493,5 @@ class AgentLoop:
     async def shutdown(self) -> None:
         await self._mcp_manager.disconnect_all()
         await self._hook_mgr.fire(HookEvent.AGENT_STOP, {})
+        if self._sandbox is not None:
+            await self._sandbox.stop()

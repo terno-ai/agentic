@@ -30,6 +30,7 @@ def main(
     provider: Optional[str] = typer.Option(None, "--provider", help="Provider: anthropic or openai"),
     project_dir: Optional[Path] = typer.Option(None, "--dir", "-d", help="Project directory"),
     plan_mode: bool = typer.Option(False, "--plan", "-p", help="Start in plan mode"),
+    sandbox: bool = typer.Option(False, "--sandbox", "-s", help="Run commands in Docker sandbox"),
     version: bool = typer.Option(False, "--version", "-v", help="Show version"),
 ):
     """Start the interactive agent REPL."""
@@ -41,7 +42,8 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
-    asyncio.run(_run_repl(model=model, provider=provider, project_dir=project_dir, plan_mode=plan_mode))
+    asyncio.run(_run_repl(model=model, provider=provider, project_dir=project_dir,
+                          plan_mode=plan_mode, sandbox=sandbox))
 
 
 async def _run_repl(
@@ -49,6 +51,7 @@ async def _run_repl(
     provider: str | None = None,
     project_dir: Path | None = None,
     plan_mode: bool = False,
+    sandbox: bool = False,
 ) -> None:
     from agentic.core.agent import AgentLoop
     from agentic.core.config import ConfigManager, detect_provider
@@ -67,10 +70,29 @@ async def _run_repl(
 
     renderer = Renderer(theme=config.settings.theme)
 
+    # Start Docker sandbox if requested
+    sandbox_instance = None
+    if sandbox or config.settings.sandbox.enabled:
+        from agentic.sandbox.docker_sandbox import DockerSandbox, DockerNotAvailable
+        sb_cfg = config.settings.sandbox
+        sandbox_instance = DockerSandbox(sb_cfg, workspace=Path.cwd())
+        try:
+            renderer.print_system("Starting sandbox container...")
+            await sandbox_instance.start()
+            renderer.print_system(f"Sandbox ready ({sb_cfg.image}  mem={sb_cfg.memory_limit}  net={sb_cfg.network})")
+        except DockerNotAvailable as e:
+            renderer.print_error(str(e))
+            renderer.print_system("Falling back to host execution.")
+            sandbox_instance = None
+        except Exception as e:
+            renderer.print_error(f"Sandbox failed to start: {e}")
+            sandbox_instance = None
+
     agent = AgentLoop(
         config=config,
         model=model,
         renderer=renderer,
+        sandbox=sandbox_instance,
     )
 
     await agent._hook_mgr.fire(HookEvent.AGENT_START, {"project_dir": str(Path.cwd())})
