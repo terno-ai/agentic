@@ -114,6 +114,13 @@ class KernelTool(Tool):
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
+# Hard cap on total characters returned to the agent per kernel execution.
+# The worker already truncates per-stream, but this is a final safety net
+# to ensure the combined tool result (stdout + stderr + result + metadata)
+# never exceeds this amount regardless of config.
+_TOTAL_OUTPUT_CAP = 12_000
+
+
 def _format_result(r: "KernelResult") -> str:
     parts: list[str] = []
 
@@ -164,7 +171,17 @@ def _format_result(r: "KernelResult") -> str:
     else:
         parts.append(r.message or str(r.kind))
 
-    return "\n\n".join(p for p in parts if p)
+    text = "\n\n".join(p for p in parts if p)
+
+    # Final hard cap — keep the tail so the agent sees the most recent output
+    if len(text) > _TOTAL_OUTPUT_CAP:
+        dropped = len(text) - _TOTAL_OUTPUT_CAP
+        text = (
+            f"[output truncated: {dropped:,} chars omitted from start]\n\n"
+            + text[-_TOTAL_OUTPUT_CAP:]
+        )
+
+    return text
 
 
 def _format_inspect(r: "KernelInspectResult") -> str:

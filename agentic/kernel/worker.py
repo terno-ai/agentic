@@ -179,8 +179,9 @@ def _handle_execute(msg: dict) -> None:
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     mem = _memory_mb()
 
-    stdout_text = _truncate(stdout_buf.getvalue(), max_chars)
-    stderr_text = _truncate(stderr_buf.getvalue(), max_chars)
+    stdout_text, stderr_text = _truncate_combined(
+        stdout_buf.getvalue(), stderr_buf.getvalue(), max_chars
+    )
 
     if timed_out:
         _send({
@@ -237,15 +238,46 @@ def _interrupt_thread(thread: threading.Thread) -> None:
 
 
 def _truncate(text: str, limit: int) -> str:
-    if len(text) > limit:
-        return text[:limit] + f"\n... (truncated at {limit} chars)"
-    return text
+    """Keep the TAIL of text — the most recent output is almost always more useful."""
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    return f"... ({dropped:,} chars omitted) ...\n" + text[-limit:]
+
+
+def _truncate_combined(stdout: str, stderr: str, limit: int) -> tuple[str, str]:
+    """
+    Apply a single character budget across stdout + stderr, keeping the tail of each.
+    Allocates up to half the budget per stream; if one is short the other gets the rest.
+    """
+    if len(stdout) + len(stderr) <= limit:
+        return stdout, stderr
+
+    half = limit // 2
+    # First pass: cap each at half
+    out = _truncate(stdout, half)
+    err = _truncate(stderr, half)
+
+    # Second pass: donate unused budget from the shorter stream to the longer
+    unused = half - len(err)
+    if unused > 0 and len(stdout) > half:
+        out = _truncate(stdout, half + unused)
+
+    unused = half - len(out)
+    if unused > 0 and len(stderr) > half:
+        err = _truncate(stderr, half + unused)
+
+    return out, err
 
 
 def _safe_repr(val) -> str:
     try:
         r = repr(val)
-        return r[:2000] + ("..." if len(r) > 2000 else "")
+        limit = 1_000
+        if len(r) <= limit:
+            return r
+        dropped = len(r) - limit
+        return f"... ({dropped:,} chars omitted) ...\n" + r[-limit:]
     except Exception:
         return f"<{type(val).__name__}>"
 
