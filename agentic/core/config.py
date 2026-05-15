@@ -41,6 +41,17 @@ class HookConfig(BaseModel):
     command: str
 
 
+class KernelConfig(BaseModel):
+    enabled: bool = False
+    memory_limit_mb: int = 512
+    default_timeout_s: int = 60
+    heartbeat_interval_s: int = 5
+    watchdog_timeout_s: int = 30
+    auto_restart_on_oom: bool = True
+    max_output_chars: int = 10_000
+    startup_code: str = ""
+
+
 class SandboxConfig(BaseModel):
     enabled: bool = False
     image: str = "agentic-sandbox:latest"
@@ -72,6 +83,7 @@ class Settings(BaseModel):
     openai_api_key: str = ""
     provider: str = ""  # "anthropic" | "openai" — auto-detected from model name if blank
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    kernel: KernelConfig = Field(default_factory=KernelConfig)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

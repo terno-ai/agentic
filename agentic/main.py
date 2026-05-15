@@ -32,6 +32,7 @@ def main(
     project_dir: Optional[Path] = typer.Option(None, "--dir", "-d", help="Project directory"),
     plan_mode: bool = typer.Option(False, "--plan", "-p", help="Start in plan mode"),
     sandbox: bool = typer.Option(False, "--sandbox", "-s", help="Run commands in Docker sandbox"),
+    kernel: bool = typer.Option(False, "--kernel", "-k", help="Enable persistent Python kernel"),
     user: Optional[str] = typer.Option(None, "--user", "-u", help="User ID for sandbox isolation (default: system username)"),
     version: bool = typer.Option(False, "--version", "-v", help="Show version"),
 ):
@@ -45,7 +46,7 @@ def main(
         return
 
     asyncio.run(_run_repl(model=model, provider=provider, project_dir=project_dir,
-                          plan_mode=plan_mode, sandbox=sandbox, user_id=user))
+                          plan_mode=plan_mode, sandbox=sandbox, kernel=kernel, user_id=user))
 
 
 async def _run_repl(
@@ -54,6 +55,7 @@ async def _run_repl(
     project_dir: Path | None = None,
     plan_mode: bool = False,
     sandbox: bool = False,
+    kernel: bool = False,
     user_id: str | None = None,
 ) -> None:
     import getpass
@@ -101,11 +103,31 @@ async def _run_repl(
             renderer.print_error(f"Sandbox failed to start: {e}")
             sandbox_instance = None
 
+    # Start Python kernel if requested
+    kernel_instance = None
+    if kernel or config.settings.kernel.enabled:
+        from agentic.kernel.manager import KernelManager
+        kernel_instance = KernelManager(
+            config=config.settings.kernel,
+            sandbox=sandbox_instance,
+        )
+        try:
+            renderer.print_system("Starting Python kernel...")
+            await kernel_instance.start()
+            renderer.print_system(
+                f"Kernel ready  mem_limit={config.settings.kernel.memory_limit_mb}MB  "
+                f"timeout={config.settings.kernel.default_timeout_s}s"
+            )
+        except Exception as e:
+            renderer.print_error(f"Kernel failed to start: {e}")
+            kernel_instance = None
+
     agent = AgentLoop(
         config=config,
         model=model,
         renderer=renderer,
         sandbox=sandbox_instance,
+        kernel=kernel_instance,
         user_id=resolved_user,
     )
 

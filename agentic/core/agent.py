@@ -114,12 +114,14 @@ class AgentLoop:
         is_subagent: bool = False,
         renderer: Any | None = None,
         sandbox: Any | None = None,  # DockerSandbox instance, or None for host execution
+        kernel: Any | None = None,   # KernelManager instance, or None
         user_id: str = "default",
     ):
         self._config = config
         self._is_subagent = is_subagent
         self._renderer = renderer
         self._sandbox = sandbox
+        self._kernel = kernel
 
         settings = config.settings
         resolved_model = model or settings.model
@@ -200,6 +202,10 @@ class AgentLoop:
             PushNotificationTool(),
         ]
 
+        if self._kernel is not None:
+            from agentic.kernel.tool import KernelTool
+            all_tools.append(KernelTool(self._kernel))
+
         if self._allowed_tools:
             all_tools = [t for t in all_tools if t.name in self._allowed_tools]
 
@@ -278,6 +284,29 @@ The host filesystem is NOT accessible. Your working directory is /workspace (mou
 - If a pip install fails due to a missing system lib, run `sudo apt-get install -y <lib>` first, then retry.
 Network: {"enabled (internet accessible)" if sb.network != "none" else "disabled (offline)"}
 Memory limit: {sb.memory_limit}  CPU limit: {sb.cpu_limit}
+"""
+
+        if self._kernel is not None:
+            kc = settings.kernel
+            system_text += f"""
+
+## Python kernel
+You have a persistent Python kernel (PythonKernel tool). Variables survive between calls.
+
+**Use PythonKernel for all Python / data-science work:**
+- Loading data, cleaning DataFrames, training models, plotting
+- Any iterative exploration where you build on previous results
+- No need to write .py files — execute code directly
+
+**Use Bash for:** shell ops, git, curl, package installation (`pip install`).
+
+**Key rules:**
+- If code calls input(), always pass answers via the `stdin` parameter.
+- On OOM: `del large_variable` then retry, or use action='restart'.
+- On timeout/hang: action='interrupt', then action='restart' if still stuck.
+- Use action='inspect' to see what variables are in scope.
+
+Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s
 """
 
         if settings.plan_mode:
@@ -534,5 +563,7 @@ Memory limit: {sb.memory_limit}  CPU limit: {sb.cpu_limit}
     async def shutdown(self) -> None:
         await self._mcp_manager.disconnect_all()
         await self._hook_mgr.fire(HookEvent.AGENT_STOP, {})
+        if self._kernel is not None:
+            await self._kernel.stop()
         if self._sandbox is not None:
             await self._sandbox.stop()
