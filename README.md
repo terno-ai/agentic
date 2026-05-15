@@ -5,7 +5,7 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 ## Features
 
 - **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including reasoning models o1/o3/o4-mini), switchable mid-session
-- **Docker Sandbox** — run all shell commands inside an isolated container with memory/CPU limits and network control
+- **Multi-user Docker Sandbox** — each user gets a dedicated, isolated container and workspace; containers persist between sessions preserving installed packages and files
 - **Interactive REPL** — readline history, tab completion, slash commands
 - **Persistent Memory** — file-based memory across sessions (user / feedback / project / reference types) with smart context retention
 - **Skills** — slash commands (`/review`, `/init`, `/simplify`, `/security-review`, `/test`) with YAML-defined custom skills
@@ -231,6 +231,7 @@ Settings are layered: `~/.agentic/settings.json` (global) → `.agentic/settings
 | `OPENAI_API_KEY` | OpenAI API key |
 | `AGENTIC_MODEL` | Override the active model |
 | `AGENTIC_PROVIDER` | Override the active provider (`anthropic` or `openai`) |
+| `AGENTIC_USER` | Override the sandbox user ID (default: system username) |
 
 ## Memory System
 
@@ -298,7 +299,7 @@ agentic/
 ├── permissions/   # Allow/deny rule engine
 ├── hooks/         # Event-driven shell hooks
 ├── scheduling/    # APScheduler cron/interval jobs
-├── sandbox/       # Docker sandbox (DockerSandbox, SandboxedBashTool)
+├── sandbox/       # Docker sandbox (DockerSandbox, SandboxedBashTool, sandboxed file tools)
 └── ui/            # prompt_toolkit REPL + Rich renderer
 
 benchmarks/
@@ -317,6 +318,6 @@ Dockerfile.sandbox           # Sandbox container image
 
 ```bash
 pip install -e ".[dev]"
-pytest                  # run all tests (101 passing)
+pytest                  # run all tests (126 passing)
 ruff check agentic/     # lint
 ```
