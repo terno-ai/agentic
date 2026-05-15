@@ -239,6 +239,34 @@ class AgentLoop:
         if settings.auto_memory:
             system_text += AUTO_MEMORY_HINT
 
+        if self._sandbox is not None:
+            sb = settings.sandbox
+            system_text += f"""
+
+## Sandbox environment
+You are running inside a Docker sandbox container. The host filesystem is NOT accessible.
+Your working directory is /workspace (the user's project, mounted read-write).
+
+**Pre-installed system libraries** (no sudo needed for these):
+- Python 3 + pip, Node.js 20 + npm
+- curl, wget, git, ffmpeg, ripgrep, build-essential, pkg-config
+- Cairo (libcairo2-dev), Pango (libpango1.0-dev), GDK, libffi-dev — pycairo/manim C deps
+- LaTeX: texlive-latex-base/extra, dvipng, dvisvgm — manim math rendering
+- OpenGL: libgl1-mesa-glx — manim OpenGL backend
+
+**Installing more packages:**
+- Python:  `pip install <package>`  — works directly, no sudo, no venv needed
+- System:  `sudo apt-get install -y <package>`  — passwordless sudo is configured
+- Node:    `npm install <package>`
+
+**Rules:**
+- NEVER say you "can't install" or ask the user to install things manually.
+- For `pip install manim`, just run it — all C dependencies are already present.
+- If a pip install fails due to a missing system lib, run `sudo apt-get install -y <lib>` first, then retry.
+Network: {"enabled (internet accessible)" if sb.network != "none" else "disabled (offline)"}
+Memory limit: {sb.memory_limit}  CPU limit: {sb.cpu_limit}
+"""
+
         if settings.plan_mode:
             system_text += "\n\n**PLAN MODE ACTIVE**: Only analyze and plan. Do NOT use Write, Edit, or Bash tools. Describe what you would do instead."
 

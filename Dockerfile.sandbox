@@ -8,38 +8,66 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Allow pip to install system-wide without Ubuntu 22.04's "externally managed" error
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    # Suppress the "running as root" pip warning (expected inside a container)
+    PIP_ROOT_USER_ACTION=ignore
 
-# Common dev tools
+# ── Core utilities ──────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Core utilities
-    curl wget git ca-certificates gnupg \
-    # Build tools
-    build-essential make cmake \
-    # Python
-    python3 python3-pip python3-venv python3-dev \
-    # Media
-    ffmpeg \
-    # Text / data
-    jq ripgrep \
-    # Compression
-    zip unzip \
+    curl wget git ca-certificates gnupg sudo \
+    build-essential make cmake pkg-config \
+    zip unzip jq ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js LTS via NodeSource
+# ── Python ──────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js LTS ─────────────────────────────────────────────────────────────
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Python aliases
-RUN ln -sf /usr/bin/python3 /usr/local/bin/python \
-    && pip3 install --no-cache-dir --upgrade pip
+# ── Media / graphics C libraries (required by manim, Pillow, pycairo, etc.) ─
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Cairo (pycairo needs these)
+    libcairo2-dev libcairo2 \
+    # Pango (text rendering used by manim)
+    libpango1.0-dev libpangocairo-1.0-0 \
+    # GDK / GLib
+    libgdk-pixbuf2.0-dev libglib2.0-dev \
+    # FFI (cffi / cryptography)
+    libffi-dev \
+    # Video / audio
+    ffmpeg \
+    # OpenGL (used by some manim backends)
+    libgl1-mesa-glx libgles2-mesa libglu1-mesa \
+    && rm -rf /var/lib/apt/lists/*
 
-# Non-root user for security
-RUN useradd -m -s /bin/bash -u 1000 sandbox
-USER sandbox
+# ── LaTeX (needed by manim for math rendering) ──────────────────────────────
+# texlive-full is ~4 GB; this minimal set covers most manim use cases.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    texlive-latex-base \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-science \
+    dvipng \
+    dvisvgm \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Upgrade pip and install common Python packages ───────────────────────────
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+# ── Runtime as root ─────────────────────────────────────────────────────────
+# The container runs as root (Docker's default). Root always has write access
+# to mounted volumes regardless of host directory ownership, so no uid-matching
+# is needed. Security comes from Docker's namespace/cgroup/seccomp isolation.
+# sudo is still available for scripts that call it explicitly.
 
 WORKDIR /workspace
 
-# Keep container alive (replaced by docker run's CMD override)
 CMD ["tail", "-f", "/dev/null"]

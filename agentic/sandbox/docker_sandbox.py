@@ -49,19 +49,22 @@ class DockerSandbox:
         if self._config.auto_build:
             await self._ensure_image()
 
+        # Run as root inside the container. Root bypasses Unix DAC checks, so
+        # /workspace is always writable regardless of the host directory's uid.
+        # Security is provided by Docker's namespace/cgroup isolation, not by
+        # running as a non-root uid inside the container.
         cmd = [
             "docker", "run",
             "--detach",
             "--rm",                                   # auto-remove on stop
             "--name", self._name,
-            "-v", f"{self._workspace}:/workspace",    # mount project dir
+            "-v", f"{self._workspace}:/workspace",   # read-write by default
             "-w", "/workspace",
             f"--memory={self._config.memory_limit}",
             f"--cpus={self._config.cpu_limit}",
             f"--network={self._config.network}",
-            "--security-opt", "no-new-privileges",    # prevent privilege escalation
             self._config.image,
-            "tail", "-f", "/dev/null",                # keep container alive
+            "tail", "-f", "/dev/null",               # keep container alive
         ]
         result = await _run_host(cmd)
         self._container_id = result.stdout.strip()
@@ -138,23 +141,41 @@ class DockerSandbox:
     # ------------------------------------------------------------------
 
     async def _ensure_image(self) -> None:
-        """Build the sandbox image if it doesn't exist locally."""
-        check = await _run_host(
-            ["docker", "image", "inspect", self._config.image],
-            check=False,
-        )
-        if check.returncode == 0:
-            return  # image already present
-
-        # Find the Dockerfile relative to the workspace or the package root
+        """Build the sandbox image if it doesn't exist or the Dockerfile is newer."""
+        # Find the Dockerfile
         dockerfile = Path(self._config.dockerfile)
         if not dockerfile.is_absolute():
-            # Try workspace first, then repo root alongside this file
             candidates = [
                 self._workspace / dockerfile,
                 Path(__file__).parent.parent.parent / dockerfile,
             ]
             dockerfile = next((p for p in candidates if p.exists()), dockerfile)
+
+        check = await _run_host(
+            ["docker", "image", "inspect", self._config.image],
+            check=False,
+        )
+        if check.returncode == 0:
+            # Image exists — check if Dockerfile is newer than the image
+            if dockerfile.exists():
+                import json as _json
+                try:
+                    info = _json.loads(check.stdout)
+                    created_str = info[0].get("Created", "")
+                    from datetime import datetime, timezone
+                    image_time = datetime.fromisoformat(
+                        created_str.replace("Z", "+00:00")
+                    )
+                    dockerfile_time = datetime.fromtimestamp(
+                        dockerfile.stat().st_mtime, tz=timezone.utc
+                    )
+                    if dockerfile_time <= image_time:
+                        return  # image is up to date
+                    print(f"Dockerfile is newer than image — rebuilding {self._config.image} ...")
+                except Exception:
+                    return  # can't compare — keep existing image
+            else:
+                return  # no dockerfile to compare against
 
         if not dockerfile.exists():
             raise FileNotFoundError(
