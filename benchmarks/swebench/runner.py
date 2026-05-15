@@ -45,22 +45,31 @@ async def run_instance(
     openai_api_key: str = "",
     timeout_s: int = 600,
     keep_repo: bool = False,
+    enable_test_feedback: bool = True,
+    max_feedback_rounds: int = 3,
 ) -> InstanceResult:
     """
     Run the agent on one SWE-bench instance.
 
-    Clones the repo at base_commit, runs AgentLoop with the issue prompt,
-    captures the resulting git diff, then (optionally) cleans up.
+    Clones the repo at base_commit, runs BenchmarkAgentLoop with the issue
+    prompt, captures the resulting git diff, then (optionally) cleans up.
     """
     instance_id = instance["instance_id"]
     repo = instance["repo"]
     base_commit = instance["base_commit"]
     model_tag = f"agentic-{provider or 'auto'}-{model}"
 
+    # Parse fail_tests (may be a JSON string in the dataset)
+    fail_tests = instance.get("FAIL_TO_PASS", [])
+    if isinstance(fail_tests, str):
+        try:
+            fail_tests = json.loads(fail_tests)
+        except Exception:
+            fail_tests = [fail_tests] if fail_tests else []
+
     repo_dir = repos_dir / instance_id
     t0 = time.monotonic()
 
-    # Clone if not already present
     if not repo_dir.exists():
         try:
             await clone_at_commit(repo, base_commit, repo_dir)
@@ -74,7 +83,6 @@ async def run_instance(
                 duration_s=time.monotonic() - t0,
             )
     else:
-        # Repo exists — reset to the base commit in case of a previous run
         try:
             reset_to_base(repo_dir, base_commit)
         except Exception:
@@ -84,7 +92,17 @@ async def run_instance(
 
     try:
         patch, tokens_in, tokens_out = await asyncio.wait_for(
-            _run_agent(prompt, repo_dir, model, provider, api_key, openai_api_key),
+            _run_agent(
+                prompt=prompt,
+                repo_dir=repo_dir,
+                model=model,
+                provider=provider,
+                api_key=api_key,
+                openai_api_key=openai_api_key,
+                fail_tests=fail_tests,
+                enable_test_feedback=enable_test_feedback,
+                max_feedback_rounds=max_feedback_rounds,
+            ),
             timeout=timeout_s,
         )
         status = "success"
@@ -122,48 +140,47 @@ async def _run_agent(
     provider: str,
     api_key: str,
     openai_api_key: str,
+    fail_tests: list[str],
+    enable_test_feedback: bool,
+    max_feedback_rounds: int,
 ) -> tuple[str, int, int]:
-    """Run AgentLoop and return (patch, input_tokens, output_tokens)."""
+    """Spin up a BenchmarkAgentLoop and return (patch, input_tokens, output_tokens)."""
     import os
 
     original_cwd = os.getcwd()
     os.chdir(repo_dir)
 
     try:
-        from agentic.core.config import ConfigManager, Settings
-        from agentic.core.agent import AgentLoop
+        from agentic.core.config import ConfigManager, Settings, detect_provider
+        from benchmarks.swebench.benchmark_agent import BenchmarkAgentLoop
 
-        # Load config normally (picks up ~/.agentic/settings.json and env vars for API keys),
-        # then override only benchmark-specific settings.
         config = ConfigManager(project_dir=repo_dir)
         base = config.settings
 
-        # Always resolve provider explicitly from model name so benchmark runs
-        # are deterministic and don't inherit whatever the user last set globally.
-        from agentic.core.config import detect_provider
         resolved_provider = provider or detect_provider(model)
 
         overrides: dict = {
             "model": model,
             "provider": resolved_provider,
-            "auto_memory": False,       # Don't persist memories across benchmark runs
-            "max_tool_iterations": 80,  # Allow more iterations for complex bugs
+            "auto_memory": False,
+            "max_tool_iterations": 80,
             "context_summarize_threshold": 60_000,
         }
-        # Explicit keys passed to runner win; otherwise fall through to what
-        # the base config already loaded from env vars / settings files.
         if api_key:
             overrides["api_key"] = api_key
         if openai_api_key:
             overrides["openai_api_key"] = openai_api_key
 
-        merged = {**base.model_dump(), **overrides}
-        config._settings = Settings(**merged)
+        config._settings = Settings(**{**base.model_dump(), **overrides})
 
-        agent = AgentLoop(
+        agent = BenchmarkAgentLoop(
             config=config,
             model=model,
-            is_subagent=True,   # Suppress REPL output
+            fail_tests=fail_tests,
+            repo_dir=repo_dir,
+            enable_test_feedback=enable_test_feedback,
+            max_feedback_rounds=max_feedback_rounds,
+            is_subagent=True,
         )
 
         await agent.run_once(prompt)

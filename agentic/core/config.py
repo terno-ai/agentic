@@ -18,7 +18,8 @@ DEFAULT_OPENAI_MODEL = "gpt-4o"
 
 def detect_provider(model: str) -> str:
     """Infer provider from model name prefix."""
-    if model.startswith(("gpt-", "o1", "o3", "o4-", "chatgpt-")):
+    import re
+    if model.startswith(("gpt-", "chatgpt-")) or re.match(r"^o\d", model):
         return "openai"
     return "anthropic"
 

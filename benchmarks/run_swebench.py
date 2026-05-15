@@ -83,6 +83,10 @@ def parse_args() -> argparse.Namespace:
                    help="Skip instances that already have a result file in output-dir")
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would run without calling the API")
+    p.add_argument("--no-test-feedback", action="store_true",
+                   help="Disable Layer 2 test-execution feedback (syntax check still runs)")
+    p.add_argument("--feedback-rounds", type=int, default=3,
+                   help="Max test-feedback iterations per instance (default 3)")
     return p.parse_args()
 
 
@@ -123,10 +127,15 @@ async def main() -> None:
             print("Aborted.")
             return
 
+    test_feedback = not args.no_test_feedback
     print(f"\nOutput directory : {output_dir}")
     print(f"Model            : {args.model}  (provider: {args.provider or 'auto'})")
     print(f"Workers          : {args.workers}")
-    print(f"Timeout          : {args.timeout}s per instance\n")
+    print(f"Timeout          : {args.timeout}s per instance")
+    print(f"Syntax check     : ON (Layer 1 — always)")
+    print(f"Test feedback    : {'ON' if test_feedback else 'OFF'} (Layer 2)"
+          + (f" — up to {args.feedback_rounds} round(s)" if test_feedback else ""))
+    print()
 
     results: list[InstanceResult] = []
     semaphore = asyncio.Semaphore(args.workers)
@@ -151,6 +160,8 @@ async def main() -> None:
                 openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
                 timeout_s=args.timeout,
                 keep_repo=args.keep_repos,
+                enable_test_feedback=test_feedback,
+                max_feedback_rounds=args.feedback_rounds,
             )
 
             # Save individual result immediately (safe to resume)

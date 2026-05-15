@@ -261,6 +261,16 @@ class OpenAIClient:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
+    @property
+    def _is_o_series(self) -> bool:
+        """o1 / o3 / o4-mini etc. use max_completion_tokens, not max_tokens."""
+        import re
+        return bool(re.match(r"^o\d", self.model))
+
+    def _tokens_kwarg(self, max_tokens: int) -> dict[str, Any]:
+        key = "max_completion_tokens" if self._is_o_series else "max_tokens"
+        return {key: max_tokens}
+
     async def stream_message(
         self,
         messages: list[dict[str, Any]],
@@ -274,7 +284,7 @@ class OpenAIClient:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": openai_msgs,
-            "max_tokens": max_tokens,
+            **self._tokens_kwarg(max_tokens),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -330,7 +340,7 @@ class OpenAIClient:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": openai_msgs,
-            "max_tokens": max_tokens,
+            **self._tokens_kwarg(max_tokens),
         }
         if openai_tools:
             kwargs["tools"] = openai_tools
