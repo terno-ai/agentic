@@ -261,15 +261,12 @@ class OpenAIClient:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
-    @property
-    def _is_o_series(self) -> bool:
-        """o1 / o3 / o4-mini etc. use max_completion_tokens, not max_tokens."""
-        import re
-        return bool(re.match(r"^o\d", self.model))
-
     def _tokens_kwarg(self, max_tokens: int) -> dict[str, Any]:
-        key = "max_completion_tokens" if self._is_o_series else "max_tokens"
-        return {key: max_tokens}
+        # OpenAI is deprecating max_tokens across all models in favour of
+        # max_completion_tokens. Newer models (gpt-5, gpt-5.5, o-series)
+        # reject max_tokens outright. Using max_completion_tokens universally
+        # is safe — older models accept both.
+        return {"max_completion_tokens": max_tokens}
 
     async def stream_message(
         self,
