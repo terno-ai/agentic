@@ -85,7 +85,7 @@ class WebSearchTool(Tool):
                 follow_redirects=True,
                 timeout=15,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; agentic/0.1)",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                     "Accept": "text/html",
                 },
             ) as client:
@@ -109,21 +109,37 @@ class WebSearchTool(Tool):
 
     @staticmethod
     def _parse_ddg(html: str, limit: int) -> list[dict[str, str]]:
-        results = []
-        # Extract result blocks
-        blocks = re.findall(
-            r'<div class="result__body">(.*?)</div>\s*</div>',
-            html, re.DOTALL
+        """
+        Parse DuckDuckGo HTML results page.
+
+        DDG's HTML layout (as of 2025):
+          <a class="result__a" href="DIRECT_URL">TITLE</a>
+          <a class="result__snippet" href="...">SNIPPET TEXT</a>
+
+        Both elements appear sequentially; we extract them independently
+        and pair them by position, which is robust to minor HTML changes.
+        """
+        from html import unescape
+
+        def clean(s: str) -> str:
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescape(s))).strip()
+
+        titles = re.findall(
+            r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            html, re.DOTALL,
         )
-        for block in blocks[:limit]:
-            title_m = re.search(r'<a[^>]+class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
-            url_m = re.search(r'href="([^"]+)"', block)
-            snippet_m = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
+        snippets = re.findall(
+            r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+            html, re.DOTALL,
+        )
 
-            title = re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
-            url = url_m.group(1) if url_m else ""
-            snippet = re.sub(r"<[^>]+>", " ", snippet_m.group(1)).strip() if snippet_m else ""
-
-            if title and url:
+        results = []
+        for i, (url, raw_title) in enumerate(titles):
+            if len(results) >= limit:
+                break
+            title = clean(raw_title)
+            snippet = clean(snippets[i]) if i < len(snippets) else ""
+            # Skip DDG ad redirect URLs (y.js) and non-http links
+            if title and url.startswith("http") and "duckduckgo.com/y.js" not in url:
                 results.append({"title": title, "url": url, "snippet": snippet})
         return results
