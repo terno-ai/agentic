@@ -19,9 +19,11 @@ app = typer.Typer(
 console = Console()
 
 
-def _get_config(project_dir: Path | None = None):
+def _get_config(project_dir: Path | None = None, user_id: str | None = None):
+    import getpass
     from agentic.core.config import ConfigManager
-    return ConfigManager(project_dir or Path.cwd())
+    uid = user_id or os.environ.get("AGENTIC_USER") or getpass.getuser()
+    return ConfigManager(project_dir or Path.cwd(), user_id=uid)
 
 
 @app.callback(invoke_without_command=True)
@@ -68,7 +70,7 @@ async def _run_repl(
     # Resolve user identity — explicit flag > env var > system username
     resolved_user = user_id or os.environ.get("AGENTIC_USER") or getpass.getuser()
 
-    config = ConfigManager(project_dir or Path.cwd())
+    config = ConfigManager(project_dir or Path.cwd(), user_id=resolved_user)
 
     if model:
         config.save_global(model=model)
@@ -175,7 +177,7 @@ async def _run_once(
     from agentic.ui.renderer import Renderer
 
     resolved_user = user_id or os.environ.get("AGENTIC_USER") or getpass.getuser()
-    config = ConfigManager(project_dir or Path.cwd())
+    config = ConfigManager(project_dir or Path.cwd(), user_id=resolved_user)
     if model:
         config.save_global(model=model)
     if provider:

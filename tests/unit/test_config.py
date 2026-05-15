@@ -31,12 +31,28 @@ def test_save_and_reload(tmp_path):
 
 
 def test_config_manager_memory_dir(tmp_path):
-    config = ConfigManager(project_dir=tmp_path)
+    config = ConfigManager(project_dir=tmp_path, user_id="alice")
     mem_dir = config.memory_dir()
     assert "memory" in str(mem_dir)
-    # Same project dir → same memory dir
-    config2 = ConfigManager(project_dir=tmp_path)
-    assert config.memory_dir() == config2.memory_dir()
+    assert "alice" in str(mem_dir)
+
+def test_memory_dir_isolated_per_user(tmp_path):
+    alice = ConfigManager(project_dir=tmp_path, user_id="alice")
+    bob   = ConfigManager(project_dir=tmp_path, user_id="bob")
+    # Same project, different users → different memory dirs
+    assert alice.memory_dir() != bob.memory_dir()
+    assert "alice" in str(alice.memory_dir())
+    assert "bob"   in str(bob.memory_dir())
+
+def test_memory_dir_same_user_same_project(tmp_path):
+    c1 = ConfigManager(project_dir=tmp_path, user_id="alice")
+    c2 = ConfigManager(project_dir=tmp_path, user_id="alice")
+    assert c1.memory_dir() == c2.memory_dir()
+
+def test_history_file_isolated_per_user(tmp_path):
+    alice = ConfigManager(project_dir=tmp_path, user_id="alice")
+    bob   = ConfigManager(project_dir=tmp_path, user_id="bob")
+    assert alice.history_file() != bob.history_file()
 
 
 def test_config_manager_merge(tmp_path):

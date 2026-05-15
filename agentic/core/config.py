@@ -103,8 +103,9 @@ class Settings(BaseModel):
 class ConfigManager:
     """Layered config: global < project < env vars."""
 
-    def __init__(self, project_dir: Path | None = None):
+    def __init__(self, project_dir: Path | None = None, user_id: str = "default"):
         self.project_dir = project_dir or Path.cwd()
+        self.user_id = user_id
         self.global_settings_path = GLOBAL_CONFIG_DIR / "settings.json"
         self.project_settings_path = self.project_dir / ".agentic" / "settings.json"
         self._settings: Settings | None = None
@@ -160,11 +161,15 @@ class ConfigManager:
         self._settings = None
 
     def memory_dir(self) -> Path:
-        project_hash = hashlib.md5(str(self.project_dir).encode()).hexdigest()[:12]
-        return GLOBAL_CONFIG_DIR / "projects" / project_hash / "memory"
+        # Key on user_id + project_dir so each user's memories are fully isolated.
+        # Two users working on the same project never share memory files.
+        key = f"{self.user_id}:{self.project_dir}"
+        project_hash = hashlib.md5(key.encode()).hexdigest()[:12]
+        return GLOBAL_CONFIG_DIR / "users" / self.user_id / "projects" / project_hash / "memory"
 
     def history_file(self) -> Path:
-        return GLOBAL_CONFIG_DIR / "history"
+        # Per-user REPL history so command history doesn't leak across users.
+        return GLOBAL_CONFIG_DIR / "users" / self.user_id / "history"
 
     def reload(self) -> None:
         self._settings = None
