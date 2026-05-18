@@ -15,7 +15,7 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 - **Persistent Python Kernel** — IPython-style kernel retains variables between calls; ideal for data science; captures stdout/stderr separately; handles stdin, OOM, timeouts, and hangs
 - **Multi-user Docker Sandbox** — each user gets a dedicated, isolated container and workspace; containers persist between sessions preserving installed packages and files
 - **Interactive REPL** — readline history, tab completion, slash commands including `/btw` for instant memory notes
-- **Persistent Memory** — file-based memory across sessions (user / feedback / project / reference types) with smart context retention
+- **Persistent Memory** — full memory bodies loaded into context every turn; relevance-ranked search; timestamps and staleness detection; MemoryWrite / MemoryRead / MemoryDelete tools
 - **Skills** — slash commands (`/review`, `/init`, `/simplify`, `/security-review`, `/test`) with YAML-defined custom skills
 - **MCP Integration** — connect any MCP server via stdio; its tools appear automatically in the agent
 - **Context Summarization** — auto-summarizes conversation while preserving critical project facts (platform, language, entry point); prompt cache warming for Anthropic
@@ -132,10 +132,12 @@ agentic config model claude-sonnet-4-6 --global
 | `/skills` | List available skills |
 | `/model <name>` | Switch model (e.g. `gpt-4o`, `claude-opus-4-7`, `o4-mini`) |
 | `/provider <anthropic\|openai>` | Switch provider |
-| `/memory` | Show memory index (rendered as markdown) |
-| `/memory search <query>` | Search memories |
+| `/memory` | Show memory index with age badges |
+| `/memory search <query>` | Relevance-ranked search across all memories |
+| `/memory delete <name>` | Delete a memory |
+| `/memory stale` | List project memories not updated in 30+ days |
 | `/history` | Show condensed conversation transcript |
-| `/btw <note>` | Save a note to memory instantly — no LLM call |
+| `/btw <note>` | Save a note instantly; `/btw [project] uses postgres` sets the type |
 | `/think [N\|off]` | Enable extended thinking with N token budget (Claude 3.7+ only) |
 | `/compact` | Manually compress conversation context |
 | `/plan` | Toggle plan mode (read-only, no edits) |
@@ -369,14 +371,29 @@ Settings are layered: `~/.agentic/settings.json` (global) → `.agentic/settings
 
 ## Memory System
 
-The agent automatically saves important context across sessions. Four memory types:
+The agent automatically saves important context across sessions using three memory tools:
 
-| Type | When saved |
+| Tool | What it does |
 |---|---|
-| `user` | User's role, preferences, expertise |
-| `feedback` | Corrections and confirmed approaches |
-| `project` | Ongoing work, goals, deadlines — platform, language, entry point |
-| `reference` | Pointers to external systems/docs |
+| `MemoryWrite` | Save or update a memory (upsert by name) |
+| `MemoryRead` | Fetch the full body of a specific memory before updating |
+| `MemoryDelete` | Remove stale or wrong memories |
+
+Four memory types — full bodies are loaded into the system prompt every turn, prioritised by type:
+
+| Type | Priority | When used |
+|---|---|---|
+| `feedback` | 1st (6 k chars) | Behavioral corrections and confirmed approaches |
+| `user` | 2nd (3 k chars) | User's role, preferences, expertise |
+| `project` | 3rd (4 k chars) | Platform, language, entry point, constraints, ongoing work |
+| `reference` | 4th (2 k chars) | Pointers to external systems and docs |
+
+**What's new vs a simple memory store:**
+- **Full bodies in context** — the model reads actual memory content, not just names
+- **Timestamps** — every record has `created_at` / `updated_at`; index shows age badges
+- **Relevance-ranked search** — word-overlap scoring with phrase bonus and recency boost
+- **Staleness detection** — project memories not updated in 30+ days are flagged at session start
+- **`/btw [type]` prefix** — e.g. `/btw [project] entry point is main.py` saves as the right type
 
 Project facts (platform, language, framework, entry point) are saved immediately when learned so they survive context summarization.
 
@@ -506,7 +523,9 @@ ruff check agentic/     # lint
 | `LS` | Structured directory listing with sizes and types (sandbox-aware) |
 | `WebFetch` | Fetch a URL and return readable text |
 | `WebSearch` | DuckDuckGo search, no API key required |
-| `MemoryWrite` | Save a persistent memory entry directly (user/feedback/project/reference) |
+| `MemoryWrite` | Save or update a memory (upsert by name) |
+| `MemoryRead` | Fetch the full body of a specific memory |
+| `MemoryDelete` | Remove a stale or wrong memory |
 | `TaskCreate/Update/List` | Track in-session TODO items; scoped per agent instance |
 | `Agent` | Spawn a sub-agent; background tasks return a `task_id` you can poll |
 | `PythonKernel` | Persistent Python interpreter (requires `--kernel`) |
