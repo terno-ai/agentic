@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import random
 from collections.abc import AsyncIterator
 from typing import Any
 
 import anthropic
 from anthropic.types import Message
+
+_RETRYABLE_HTTP = {429, 500, 502, 503, 529}
+_MAX_RETRIES = 4
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, anthropic.RateLimitError):
+        return True
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code in _RETRYABLE_HTTP:
+        return True
+    if isinstance(exc, anthropic.APIConnectionError):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +84,39 @@ class AnthropicClient:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
 
+    @staticmethod
+    def _with_cache_warming(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add cache_control breakpoint to the last stable message (penultimate turn).
+
+        Anthropic caches everything up to the marked position, so marking the
+        second-to-last user message means the whole conversation except the
+        current turn is eligible for cache hits on repeated calls.
+        """
+        if len(messages) < 4:
+            return messages
+
+        msgs = [m.copy() for m in messages]
+        # Find the second-to-last user message and mark its last content block
+        user_indices = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+        if len(user_indices) < 2:
+            return msgs
+
+        target_idx = user_indices[-2]
+        content = msgs[target_idx].get("content")
+        if isinstance(content, list) and content:
+            last_block = dict(content[-1])
+            last_block["cache_control"] = {"type": "ephemeral"}
+            msgs[target_idx] = dict(msgs[target_idx])
+            msgs[target_idx]["content"] = list(content[:-1]) + [last_block]
+        elif isinstance(content, str):
+            msgs[target_idx] = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                ],
+            }
+        return msgs
+
     async def stream_message(
         self,
         messages: list[dict[str, Any]],
@@ -76,45 +124,63 @@ class AnthropicClient:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 8192,
     ) -> AsyncIterator[StreamEvent]:
+        warmed_messages = self._with_cache_warming(messages)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system,
-            "messages": messages,
+            "messages": warmed_messages,
         }
         if tools:
             kwargs["tools"] = tools
 
-        async with self._async_client.messages.stream(**kwargs) as stream:
-            current_tool_id: str | None = None
+        last_exc: BaseException | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            started = False
+            try:
+                async with self._async_client.messages.stream(**kwargs) as stream:
+                    current_tool_id: str | None = None
 
-            async for event in stream:
-                if hasattr(event, "type"):
-                    if event.type == "content_block_start":
-                        block = event.content_block
-                        if block.type == "tool_use":
-                            current_tool_id = block.id
-                            yield ToolUseStart(block.id, block.name)
-                    elif event.type == "content_block_delta":
-                        delta = event.delta
-                        if hasattr(delta, "text"):
-                            yield TextDelta(delta.text)
-                        elif hasattr(delta, "partial_json") and current_tool_id:
-                            yield ToolInputDelta(current_tool_id, delta.partial_json)
-                    elif event.type == "message_start":
-                        self.total_input_tokens += event.message.usage.input_tokens
-                    elif event.type == "message_delta":
-                        if hasattr(event, "usage") and event.usage:
-                            self.total_output_tokens += event.usage.output_tokens
+                    async for event in stream:
+                        started = True
+                        if hasattr(event, "type"):
+                            if event.type == "content_block_start":
+                                block = event.content_block
+                                if block.type == "tool_use":
+                                    current_tool_id = block.id
+                                    yield ToolUseStart(block.id, block.name)
+                            elif event.type == "content_block_delta":
+                                delta = event.delta
+                                if hasattr(delta, "text"):
+                                    yield TextDelta(delta.text)
+                                elif hasattr(delta, "partial_json") and current_tool_id:
+                                    yield ToolInputDelta(current_tool_id, delta.partial_json)
+                            elif event.type == "message_start":
+                                self.total_input_tokens += event.message.usage.input_tokens
+                            elif event.type == "message_delta":
+                                if hasattr(event, "usage") and event.usage:
+                                    self.total_output_tokens += event.usage.output_tokens
 
-            final_msg = await stream.get_final_message()
-            yield UsageInfo(
-                input_tokens=final_msg.usage.input_tokens,
-                output_tokens=final_msg.usage.output_tokens,
-                cache_read=getattr(final_msg.usage, "cache_read_input_tokens", 0) or 0,
-                cache_write=getattr(final_msg.usage, "cache_creation_input_tokens", 0) or 0,
-            )
-            yield MessageComplete(final_msg)
+                    final_msg = await stream.get_final_message()
+                    yield UsageInfo(
+                        input_tokens=final_msg.usage.input_tokens,
+                        output_tokens=final_msg.usage.output_tokens,
+                        cache_read=getattr(final_msg.usage, "cache_read_input_tokens", 0) or 0,
+                        cache_write=getattr(final_msg.usage, "cache_creation_input_tokens", 0) or 0,
+                    )
+                    yield MessageComplete(final_msg)
+                    return  # success
+
+            except Exception as exc:
+                last_exc = exc
+                # Never retry if we've already yielded events (partial stream)
+                if started or not _is_retryable(exc) or attempt == _MAX_RETRIES:
+                    raise
+
+            wait = min(2 ** attempt, 30) + random.random()
+            await asyncio.sleep(wait)
+
+        raise last_exc  # type: ignore[misc]
 
     def create_message(
         self,
@@ -288,40 +354,52 @@ class OpenAIClient:
         if openai_tools:
             kwargs["tools"] = openai_tools
 
-        # Track per-index tool call state across chunks
-        tool_state: dict[int, dict[str, str]] = {}  # index → {id, name}
+        last_exc: BaseException | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            started = False
+            tool_state: dict[int, dict[str, str]] = {}  # index → {id, name}
+            try:
+                stream = await self._async_client.chat.completions.create(**kwargs)
+                async for chunk in stream:
+                    started = True
+                    # Final usage chunk has no choices
+                    if not chunk.choices:
+                        if chunk.usage:
+                            inp = chunk.usage.prompt_tokens
+                            out = chunk.usage.completion_tokens
+                            self.total_input_tokens += inp
+                            self.total_output_tokens += out
+                            yield UsageInfo(input_tokens=inp, output_tokens=out)
+                        continue
 
-        stream = await self._async_client.chat.completions.create(**kwargs)
+                    choice = chunk.choices[0]
+                    delta = choice.delta
 
-        async for chunk in stream:
-            # Final usage chunk has no choices
-            if not chunk.choices:
-                if chunk.usage:
-                    inp = chunk.usage.prompt_tokens
-                    out = chunk.usage.completion_tokens
-                    self.total_input_tokens += inp
-                    self.total_output_tokens += out
-                    yield UsageInfo(input_tokens=inp, output_tokens=out)
-                continue
+                    if delta.content:
+                        yield TextDelta(delta.content)
 
-            choice = chunk.choices[0]
-            delta = choice.delta
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if tc_delta.id:
+                                tool_state[idx] = {"id": tc_delta.id, "name": tc_delta.function.name or ""}
+                                yield ToolUseStart(tc_delta.id, tc_delta.function.name or "")
+                            if tc_delta.function and tc_delta.function.arguments:
+                                tool_id = tool_state[idx]["id"]
+                                yield ToolInputDelta(tool_id, tc_delta.function.arguments)
 
-            if delta.content:
-                yield TextDelta(delta.content)
+                yield MessageComplete(None)
+                return  # success
 
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    # New tool call: id and name arrive in the first chunk for that index
-                    if tc_delta.id:
-                        tool_state[idx] = {"id": tc_delta.id, "name": tc_delta.function.name or ""}
-                        yield ToolUseStart(tc_delta.id, tc_delta.function.name or "")
-                    if tc_delta.function and tc_delta.function.arguments:
-                        tool_id = tool_state[idx]["id"]
-                        yield ToolInputDelta(tool_id, tc_delta.function.arguments)
+            except Exception as exc:
+                last_exc = exc
+                if started or not _is_retryable(exc) or attempt == _MAX_RETRIES:
+                    raise
 
-        yield MessageComplete(None)
+            wait = min(2 ** attempt, 30) + random.random()
+            await asyncio.sleep(wait)
+
+        raise last_exc  # type: ignore[misc]
 
     def create_message(
         self,

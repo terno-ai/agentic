@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -44,7 +45,7 @@ class REPL:
         self._history_file = history_file
         self._completer = AgentCompleter()
         self._session: PromptSession | None = None
-        self._interrupted = False
+        self._agent_task: asyncio.Task | None = None  # current running agent turn
 
     def setup(self) -> None:
         history_file = self._history_file
@@ -54,8 +55,12 @@ class REPL:
 
         @bindings.add("c-c")
         def handle_ctrl_c(event):
-            self._interrupted = True
-            event.app.current_buffer.reset()
+            # Cancel a running agent turn; otherwise just clear the input line
+            if self._agent_task and not self._agent_task.done():
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(self._agent_task.cancel)
+            else:
+                event.app.current_buffer.reset()
 
         self._session = PromptSession(
             history=FileHistory(str(history_file)),
@@ -207,11 +212,15 @@ class REPL:
             self._renderer.print_system(result.content)
             return
 
-        # Run through agent loop
-        self._interrupted = False
+        # Run through agent loop — wrapped in a task so Ctrl+C can cancel it cleanly
+        self._agent_task = asyncio.create_task(self._agent.run_turn(text))
         try:
-            await self._agent.run_turn(text)
+            await self._agent_task
+        except asyncio.CancelledError:
+            self._renderer.print_system("\n(Interrupted)")
         except KeyboardInterrupt:
             self._renderer.print_system("\n(Interrupted)")
         except Exception as e:
             self._renderer.print_error(str(e))
+        finally:
+            self._agent_task = None

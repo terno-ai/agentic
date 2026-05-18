@@ -43,7 +43,8 @@ class WebFetchTool(Tool):
                     text = self._strip_html(text)
 
                 if len(text) > MAX_CONTENT:
-                    text = text[:MAX_CONTENT] + f"\n... (truncated at {MAX_CONTENT} chars)"
+                    omitted = len(text) - MAX_CONTENT
+                    text = f"[...{omitted:,} chars omitted from start...]\n" + text[-MAX_CONTENT:]
 
                 return ToolResult.ok(text, url=url, status=resp.status_code)
         except httpx.HTTPStatusError as e:

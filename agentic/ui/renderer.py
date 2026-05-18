@@ -70,16 +70,37 @@ class Renderer:
 
     def print_tool_result(self, tool_name: str, result_text: str, is_error: bool = False) -> None:
         if is_error:
-            preview = result_text[:200] + ("..." if len(result_text) > 200 else "")
+            preview = result_text[:300] + ("..." if len(result_text) > 300 else "")
             self.console.print(f"  [tool.error]✗ {preview}[/tool.error]")
+        elif tool_name == "Edit" and "\n@@" in result_text:
+            # Split summary line from diff body
+            lines = result_text.strip().splitlines()
+            summary = next((l for l in lines if not l.startswith(("---", "+++", "@@", "-", "+", " "))), lines[0])
+            diff_body = "\n".join(l for l in lines if l.startswith(("---", "+++", "@@", "-", "+", " ")))
+            self.console.print(f"  [tool.result]✓ {summary}[/tool.result]")
+            if diff_body:
+                self.console.print(Syntax(diff_body, "diff", theme="monokai", background_color="default"))
         else:
-            # Show first line or brief summary
             lines = result_text.strip().splitlines()
             if len(lines) <= 3:
                 preview = result_text.strip()
             else:
                 preview = "\n".join(lines[:3]) + f"\n  ... ({len(lines)} lines total)"
             self.console.print(f"  [tool.result]✓ {preview}[/tool.result]")
+
+    def print_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read: int = 0,
+        cache_write: int = 0,
+    ) -> None:
+        parts = [f"in={input_tokens:,}", f"out={output_tokens:,}"]
+        if cache_read:
+            parts.append(f"cache_hit={cache_read:,}")
+        if cache_write:
+            parts.append(f"cache_write={cache_write:,}")
+        self.console.print(f"[context]  tokens · {' · '.join(parts)}[/context]")
 
     def print_system(self, text: str) -> None:
         self.console.print(f"[system]{text}[/system]")

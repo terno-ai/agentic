@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import difflib
-import re
 from pathlib import Path
-from typing import Any
 
 from agentic.tools.base import Tool, ToolResult
+
+MAX_READ_CHARS = 50_000
+
+
+def _tail_truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"[...{omitted:,} chars omitted from start...]\n" + text[-max_chars:]
+
+
+def _norm_lines(text: str) -> str:
+    """Strip trailing whitespace from every line — for fuzzy matching."""
+    return "\n".join(line.rstrip() for line in text.splitlines())
 
 
 class ReadTool(Tool):
@@ -34,8 +46,12 @@ class ReadTool(Tool):
         if not path.is_file():
             return ToolResult.error(f"Not a file: {file_path}")
 
+        # Detect binary
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            raw = path.read_bytes()
+            if b"\x00" in raw[:8192]:
+                return ToolResult.error(f"Binary file (not readable as text): {file_path}")
+            text = raw.decode("utf-8", errors="replace")
         except Exception as e:
             return ToolResult.error(f"Cannot read {file_path}: {e}")
 
@@ -47,6 +63,7 @@ class ReadTool(Tool):
         numbered = "".join(
             f"{i + start + 1}\t{line}" for i, line in enumerate(selected)
         )
+        numbered = _tail_truncate(numbered, MAX_READ_CHARS)
         return ToolResult.ok(numbered, lines_read=len(selected), total_lines=len(lines))
 
 
@@ -73,7 +90,7 @@ class WriteTool(Tool):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             lines = content.count("\n") + 1
-            return ToolResult.ok(f"Written {len(content)} bytes ({lines} lines) to {file_path}")
+            return ToolResult.ok(f"Written {len(content):,} bytes ({lines:,} lines) to {file_path}")
         except Exception as e:
             return ToolResult.error(f"Cannot write {file_path}: {e}")
 
@@ -81,7 +98,8 @@ class WriteTool(Tool):
 class EditTool(Tool):
     name = "Edit"
     description = (
-        "Replace an exact string in a file. The old_string must match exactly (including whitespace). "
+        "Replace an exact string in a file. The old_string must match the file content "
+        "(trailing whitespace per line is normalized automatically). "
         "Set replace_all=true to replace every occurrence."
     )
     input_schema = {
@@ -107,24 +125,29 @@ class EditTool(Tool):
         except Exception as e:
             return ToolResult.error(f"Cannot read {file_path}: {e}")
 
-        if old_string not in original:
-            return ToolResult.error(
-                f"old_string not found in {file_path}. "
-                "Check whitespace and indentation match exactly."
-            )
+        # Try exact match first; fall back to trailing-whitespace-normalized match
+        if old_string in original:
+            working, working_old = original, old_string
+        else:
+            norm_orig = _norm_lines(original)
+            norm_old = _norm_lines(old_string)
+            if norm_old in norm_orig:
+                working, working_old = norm_orig, norm_old
+            else:
+                return ToolResult.error(
+                    f"old_string not found in {file_path}.\n"
+                    "Tip: check indentation and that the text matches the file exactly."
+                )
 
-        count = original.count(old_string)
+        count = working.count(working_old)
         if count > 1 and not replace_all:
             return ToolResult.error(
-                f"old_string appears {count} times. Use replace_all=true or provide more context."
+                f"old_string appears {count} times in {file_path}. "
+                "Use replace_all=true or provide more surrounding context to make it unique."
             )
 
-        if replace_all:
-            updated = original.replace(old_string, new_string)
-            n = count
-        else:
-            updated = original.replace(old_string, new_string, 1)
-            n = 1
+        n = count if replace_all else 1
+        updated = working.replace(working_old, new_string) if replace_all else working.replace(working_old, new_string, 1)
 
         try:
             path.write_text(updated, encoding="utf-8")
@@ -136,5 +159,6 @@ class EditTool(Tool):
             fromfile=f"a/{path.name}", tofile=f"b/{path.name}",
             lineterm="",
         ))
-        diff_text = "\n".join(diff[:50])
-        return ToolResult.ok(f"Replaced {n} occurrence(s) in {file_path}\n{diff_text}")
+        diff_text = "\n".join(diff[:80])
+        summary = f"Replaced {n} occurrence(s) in {path.name}"
+        return ToolResult.ok(f"{summary}\n{diff_text}" if diff_text else summary)

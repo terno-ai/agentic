@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -198,6 +199,7 @@ class AgentLoop:
             SandboxedReadTool, SandboxedWriteTool, SandboxedEditTool,
         )
         from agentic.tools.web_tools import WebFetchTool, WebSearchTool
+        from agentic.tools.search_tools import GrepTool, GlobTool
         from agentic.tools.task_tools import (
             TaskCreateTool, TaskGetTool, TaskListTool,
             TaskUpdateTool, TaskStopTool, TaskOutputTool,
@@ -224,6 +226,8 @@ class AgentLoop:
             edit_tool,
             WebFetchTool(),
             WebSearchTool(),
+            GrepTool(),
+            GlobTool(),
             TaskCreateTool(),
             TaskGetTool(),
             TaskListTool(),
@@ -493,15 +497,46 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             # If no tool calls, we're done
             if not tool_calls:
                 if self._renderer and not self._is_subagent:
+                    u = self._context_mgr._last_usage
+                    if u:
+                        self._renderer.print_usage(
+                            u.get("input", 0), u.get("output", 0),
+                            u.get("cache_read", 0), u.get("cache_write", 0),
+                        )
                     status = self._context_mgr.status_line()
                     self._renderer.print_context_status(status)
                 return assistant_text
 
-            # Execute tool calls and continue loop
-            for tc in tool_calls:
-                await self._execute_tool(tc)
+            # Execute all tool calls for this turn concurrently
+            await self._execute_tools_parallel(tool_calls)
 
         return self._conversation.last_assistant_text()
+
+    async def _execute_tools_parallel(self, tool_calls: list[dict[str, Any]]) -> None:
+        """Print all tool-call headers, run them concurrently, then print results in order."""
+        # Show all pending calls up-front so the user sees what's coming
+        if self._renderer and not self._is_subagent:
+            for tc in tool_calls:
+                self._renderer.print_tool_call(tc["name"], tc["input"])
+
+        async def _run(tc: dict[str, Any]) -> tuple[dict[str, Any], "ToolResult"]:
+            await self._hook_mgr.fire(
+                HookEvent.PRE_TOOL_CALL,
+                {"tool_name": tc["name"], "tool_input": tc["input"]},
+            )
+            result = await self._tool_registry.execute(tc["name"], tc["input"])
+            await self._hook_mgr.fire(
+                HookEvent.POST_TOOL_CALL,
+                {"tool_name": tc["name"], "tool_input": tc["input"], "tool_result": result.content},
+            )
+            return tc, result
+
+        results = await asyncio.gather(*[_run(tc) for tc in tool_calls])
+
+        for tc, result in results:
+            if self._renderer and not self._is_subagent:
+                self._renderer.print_tool_result(tc["name"], result.content, result.is_error)
+            self._conversation.add_tool_result(tc["id"], result.content, result.is_error)
 
     async def _finalize_tool_call(
         self,
@@ -516,35 +551,6 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             tool_input = {}
         tool["input"] = tool_input
         tool_calls.append(tool)
-
-    async def _execute_tool(self, tc: dict[str, Any]) -> None:
-        tool_name = tc["name"]
-        tool_input = tc["input"]
-        tool_use_id = tc["id"]
-
-        if self._renderer and not self._is_subagent:
-            self._renderer.print_tool_call(tool_name, tool_input)
-
-        await self._hook_mgr.fire(
-            HookEvent.PRE_TOOL_CALL,
-            {"tool_name": tool_name, "tool_input": tool_input},
-        )
-
-        result: ToolResult = await self._tool_registry.execute(tool_name, tool_input)
-
-        if self._renderer and not self._is_subagent:
-            self._renderer.print_tool_result(tool_name, result.content, result.is_error)
-
-        await self._hook_mgr.fire(
-            HookEvent.POST_TOOL_CALL,
-            {
-                "tool_name": tool_name,
-                "tool_input": tool_input,
-                "tool_result": result.content,
-            },
-        )
-
-        self._conversation.add_tool_result(tool_use_id, result.content, result.is_error)
 
     async def _process_memory_tags(self, text: str) -> None:
         """Extract and save <memory_save> blocks from assistant output."""
@@ -617,3 +623,7 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             await self._kernel.stop()
         if self._sandbox is not None:
             await self._sandbox.stop()
+        # Terminate the persistent bash shell if one was created
+        bash = self._tool_registry.get("Bash")
+        if bash is not None and hasattr(bash, "terminate"):
+            await bash.terminate()
