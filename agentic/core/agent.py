@@ -11,7 +11,7 @@ from typing import Any
 from agentic.core.config import ConfigManager
 from agentic.core.context import ContextManager
 from agentic.core.conversation import ConversationHistory
-from agentic.core.llm import create_llm_client, TextDelta, ToolUseStart, ToolInputDelta, MessageComplete, UsageInfo
+from agentic.core.llm import create_llm_client, TextDelta, ThinkingDelta, ToolUseStart, ToolInputDelta, MessageComplete, UsageInfo
 from agentic.hooks.events import HookEvent
 from agentic.hooks.manager import HookManager
 from agentic.memory.manager import MemoryManager
@@ -398,7 +398,15 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                 return ""
 
         await self._hook_mgr.fire(HookEvent.USER_MESSAGE, {"message": user_message})
-        self._conversation.add_user(user_message)
+
+        # Auto-detect file paths and URLs mentioned in the message and attach their content
+        attachments = await self._collect_attachments(user_message)
+        if attachments:
+            combined = user_message + "\n\n" + "\n\n".join(attachments)
+            self._conversation.add_user(combined)
+        else:
+            self._conversation.add_user(user_message)
+
         if self._renderer:
             self._renderer.print_user(user_message)
 
@@ -441,8 +449,13 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                 system=system,
                 tools=tool_schemas,
                 max_tokens=settings.max_tokens,
+                thinking_budget=settings.thinking_budget,
             ):
-                if isinstance(event, TextDelta):
+                if isinstance(event, ThinkingDelta):
+                    if self._renderer and not self._is_subagent:
+                        self._renderer.stream_thinking(event.text)
+
+                elif isinstance(event, TextDelta):
                     assistant_text += event.text
                     if self._renderer and not self._is_subagent:
                         self._renderer.stream_text(event.text)
@@ -551,6 +564,66 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             tool_input = {}
         tool["input"] = tool_input
         tool_calls.append(tool)
+
+    # Patterns for auto-detection: absolute/relative/home paths and http(s) URLs
+    _FILE_RE = re.compile(
+        r'(?<![`\w])'           # not inside a word or code span
+        r'((?:~|\.{1,2})?/[\w./\-]+)'  # path starting with ~, ./, ../, or /
+        r'(?![`\w])'
+    )
+    _URL_RE = re.compile(r'https?://[^\s<>"\']+')
+
+    async def _collect_attachments(self, message: str) -> list[str]:
+        """Pre-read file paths and fetch URLs mentioned in the user's message."""
+        attachments: list[str] = []
+        seen: set[str] = set()
+
+        for m in self._FILE_RE.finditer(message):
+            raw = m.group(1)
+            path = Path(raw).expanduser()
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.is_file():
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                    # Truncate large files to avoid flooding the context
+                    if len(text) > 20_000:
+                        text = text[:20_000] + f"\n[...truncated at 20 000 chars]"
+                    attachments.append(f"<file path=\"{raw}\">\n{text}\n</file>")
+                    if self._renderer and not self._is_subagent:
+                        self._renderer.print_system(f"Attached file: {raw}")
+                except Exception:
+                    pass
+
+        for m in self._URL_RE.finditer(message):
+            url = m.group(0)
+            if url in seen:
+                continue
+            seen.add(url)
+            try:
+                import httpx
+                async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    ct = resp.headers.get("content-type", "")
+                    body = resp.text
+                    if "html" in ct:
+                        body = re.sub(r"<[^>]+>", " ", re.sub(
+                            r"<(script|style|head)[^>]*>.*?</\1>", "", body,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        ))
+                        body = re.sub(r"\s{3,}", "\n\n", body).strip()
+                    if len(body) > 20_000:
+                        body = body[:20_000] + "\n[...truncated]"
+                    attachments.append(f"<url href=\"{url}\">\n{body}\n</url>")
+                    if self._renderer and not self._is_subagent:
+                        self._renderer.print_system(f"Fetched URL: {url}")
+            except Exception:
+                pass  # silently skip — URL might be illustrative, not real
+
+        return attachments
 
     async def _process_memory_tags(self, text: str) -> None:
         """Extract and save <memory_save> blocks from assistant output."""

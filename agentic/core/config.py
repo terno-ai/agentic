@@ -79,6 +79,7 @@ class Settings(BaseModel):
     auto_memory: bool = True
     plan_mode: bool = False
     max_tool_iterations: int = 50
+    thinking_budget: int = 0   # 0 = disabled; >0 enables extended thinking (Claude 3.7+)
     api_key: str = ""
     openai_api_key: str = ""
     provider: str = ""  # "anthropic" | "openai" — auto-detected from model name if blank

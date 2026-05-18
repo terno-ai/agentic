@@ -62,6 +62,20 @@ class REPL:
             else:
                 event.app.current_buffer.reset()
 
+        @bindings.add("enter")
+        def submit_on_enter(event):
+            """Enter submits; Esc+Enter (bound below) inserts a newline."""
+            buf = event.app.current_buffer
+            if buf.text.strip():
+                buf.validate_and_handle()
+            else:
+                buf.insert_text("\n")
+
+        @bindings.add("escape", "enter", eager=True)
+        def insert_newline(event):
+            """Esc+Enter (Alt+Enter on most terminals) inserts a literal newline."""
+            event.app.current_buffer.insert_text("\n")
+
         self._session = PromptSession(
             history=FileHistory(str(history_file)),
             completer=self._completer,
@@ -69,7 +83,8 @@ class REPL:
             style=PROMPT_STYLE,
             enable_history_search=True,
             complete_while_typing=False,
-            multiline=False,
+            multiline=True,
+            prompt_continuation="... ",
         )
 
         # Update completions with current skills
@@ -184,6 +199,20 @@ class REPL:
             current = self._agent._config.settings.plan_mode
             self._agent._config.save_project(plan_mode=not current)
             self._renderer.print_system(f"Plan mode: {'ON' if not current else 'OFF'}")
+            return
+
+        if text.startswith("/think"):
+            arg = text.removeprefix("/think").strip()
+            if arg == "off" or arg == "0":
+                self._agent._config.save_project(thinking_budget=0)
+                self._renderer.print_system("Extended thinking: OFF")
+            else:
+                budget = int(arg) if arg.isdigit() else 8000
+                self._agent._config.save_project(thinking_budget=budget)
+                self._renderer.print_system(
+                    f"Extended thinking: ON (budget={budget:,} tokens). "
+                    "Only effective with Claude 3.7+ models."
+                )
             return
 
         if text.startswith("/btw "):

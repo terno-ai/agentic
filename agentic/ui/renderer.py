@@ -35,6 +35,7 @@ class Renderer:
             markup=True,
         )
         self._streaming_buffer = ""
+        self._thinking_started = False
 
     def user_prompt(self) -> None:
         self.console.print()
@@ -45,13 +46,27 @@ class Renderer:
     def print_assistant_start(self) -> None:
         self.console.print("\n[assistant]Assistant:[/assistant]", end=" ")
 
+    def stream_thinking(self, delta: str) -> None:
+        """Stream extended thinking content (shown dimmed)."""
+        if not self._thinking_started:
+            self._thinking_started = True
+            print("\n\x1b[2m[thinking]\x1b[0m", end="", flush=True)
+        print(f"\x1b[2m{delta}\x1b[0m", end="", flush=True)
+
     def stream_text(self, delta: str) -> None:
         """Stream text character by character."""
+        if self._thinking_started:
+            # Close the thinking block before response text
+            print("\n\x1b[2m[/thinking]\x1b[0m\n", end="", flush=True)
+            self._thinking_started = False
         self._streaming_buffer += delta
         print(delta, end="", flush=True)
 
     def finish_streaming(self) -> None:
         """Called when streaming is complete."""
+        if self._thinking_started:
+            print("\n\x1b[2m[/thinking]\x1b[0m", end="", flush=True)
+            self._thinking_started = False
         if self._streaming_buffer:
             print()  # newline after streamed content
         self._streaming_buffer = ""
@@ -160,8 +175,13 @@ class Renderer:
 - `/provider <anthropic|openai>` — switch provider
 - `/plan` — toggle plan mode (read-only)
 - `/btw <note>` — save a note to memory instantly (no LLM call)
+- `/think [N|off]` — enable extended thinking with budget N tokens (Claude 3.7+ only)
 - `/clear` — clear conversation history
 - `/exit` or `Ctrl+D` — exit
+
+**Multi-line input:**
+- `Esc+Enter` (or `Alt+Enter`) — insert a newline without submitting
+- `Enter` — submit the message
 
 **Skill commands:**
 - `/init` — initialize AGENT.md

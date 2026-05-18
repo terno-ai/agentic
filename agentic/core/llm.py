@@ -40,6 +40,12 @@ class TextDelta(StreamEvent):
         self.text = text
 
 
+class ThinkingDelta(StreamEvent):
+    """Thinking block content from extended thinking (Claude 3.7+)."""
+    def __init__(self, text: str):
+        self.text = text
+
+
 class ToolUseStart(StreamEvent):
     def __init__(self, tool_use_id: str, tool_name: str):
         self.tool_use_id = tool_use_id
@@ -123,6 +129,7 @@ class AnthropicClient:
         system: str | list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 8192,
+        thinking_budget: int = 0,
     ) -> AsyncIterator[StreamEvent]:
         warmed_messages = self._with_cache_warming(messages)
         kwargs: dict[str, Any] = {
@@ -133,6 +140,10 @@ class AnthropicClient:
         }
         if tools:
             kwargs["tools"] = tools
+        if thinking_budget > 0:
+            # budget_tokens must be < max_tokens; bump max_tokens to fit both
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            kwargs["max_tokens"] = max(max_tokens, thinking_budget + 1024)
 
         last_exc: BaseException | None = None
         for attempt in range(_MAX_RETRIES + 1):
@@ -141,18 +152,25 @@ class AnthropicClient:
                 async with self._async_client.messages.stream(**kwargs) as stream:
                     current_tool_id: str | None = None
 
+                    current_block_type: str = "text"
                     async for event in stream:
                         started = True
                         if hasattr(event, "type"):
                             if event.type == "content_block_start":
                                 block = event.content_block
+                                current_block_type = block.type
                                 if block.type == "tool_use":
                                     current_tool_id = block.id
                                     yield ToolUseStart(block.id, block.name)
                             elif event.type == "content_block_delta":
                                 delta = event.delta
-                                if hasattr(delta, "text"):
-                                    yield TextDelta(delta.text)
+                                if hasattr(delta, "thinking"):
+                                    yield ThinkingDelta(delta.thinking)
+                                elif hasattr(delta, "text"):
+                                    if current_block_type == "thinking":
+                                        yield ThinkingDelta(delta.text)
+                                    else:
+                                        yield TextDelta(delta.text)
                                 elif hasattr(delta, "partial_json") and current_tool_id:
                                     yield ToolInputDelta(current_tool_id, delta.partial_json)
                             elif event.type == "message_start":
