@@ -6,8 +6,10 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
@@ -79,20 +81,30 @@ class Renderer:
             self.console.print(text)
 
     def print_tool_call(self, tool_name: str, tool_input: dict[str, Any]) -> None:
-        # Show compact tool call
         summary = self._summarize_input(tool_name, tool_input)
         self.console.print(f"\n[tool.name]⚙ {tool_name}[/tool.name] [tool.input]{summary}[/tool.input]")
 
-    def print_tool_result(self, tool_name: str, result_text: str, is_error: bool = False) -> None:
+    def start_spinner(self, tool_name: str) -> Live:
+        """Start an animated spinner shown while a tool is executing."""
+        spin = Spinner("dots", text=f"[dim]{tool_name}…[/dim]", style="dim")
+        live = Live(spin, console=self.console, refresh_per_second=12, transient=True)
+        live.start()
+        return live
+
+    def stop_spinner(self, live: Live) -> None:
+        live.stop()
+
+    def print_tool_result(self, tool_name: str, result_text: str, is_error: bool = False, elapsed: float = 0.0) -> None:
+        time_str = f" [dim]{elapsed:.1f}s[/dim]" if elapsed >= 0.5 else ""
         if is_error:
             preview = result_text[:300] + ("..." if len(result_text) > 300 else "")
-            self.console.print(f"  [tool.error]✗ {preview}[/tool.error]")
+            self.console.print(f"  [tool.error]✗ {preview}[/tool.error]{time_str}")
         elif tool_name == "Edit" and "\n@@" in result_text:
             # Split summary line from diff body
             lines = result_text.strip().splitlines()
             summary = next((l for l in lines if not l.startswith(("---", "+++", "@@", "-", "+", " "))), lines[0])
             diff_body = "\n".join(l for l in lines if l.startswith(("---", "+++", "@@", "-", "+", " ")))
-            self.console.print(f"  [tool.result]✓ {summary}[/tool.result]")
+            self.console.print(f"  [tool.result]✓ {summary}[/tool.result]{time_str}")
             if diff_body:
                 self.console.print(Syntax(diff_body, "diff", theme="monokai", background_color="default"))
         else:
@@ -101,7 +113,7 @@ class Renderer:
                 preview = result_text.strip()
             else:
                 preview = "\n".join(lines[:3]) + f"\n  ... ({len(lines)} lines total)"
-            self.console.print(f"  [tool.result]✓ {preview}[/tool.result]")
+            self.console.print(f"  [tool.result]✓ {preview}[/tool.result]{time_str}")
 
     def print_usage(
         self,
@@ -109,13 +121,15 @@ class Renderer:
         output_tokens: int,
         cache_read: int = 0,
         cache_write: int = 0,
+        session_cost: float = 0.0,
     ) -> None:
         parts = [f"in={input_tokens:,}", f"out={output_tokens:,}"]
         if cache_read:
             parts.append(f"cache_hit={cache_read:,}")
         if cache_write:
             parts.append(f"cache_write={cache_write:,}")
-        self.console.print(f"[context]  tokens · {' · '.join(parts)}[/context]")
+        cost_str = f"  [dim]~${session_cost:.4f} session[/dim]" if session_cost > 0 else ""
+        self.console.print(f"[context]  tokens · {' · '.join(parts)}{cost_str}[/context]")
 
     def print_system(self, text: str) -> None:
         self.console.print(f"[system]{text}[/system]")
@@ -176,6 +190,7 @@ class Renderer:
 - `/plan` — toggle plan mode (read-only)
 - `/btw <note>` — save a note to memory instantly (no LLM call)
 - `/think [N|off]` — enable extended thinking with budget N tokens (Claude 3.7+ only)
+- `/compact` — manually compress conversation context
 - `/clear` — clear conversation history
 - `/exit` or `Ctrl+D` — exit
 

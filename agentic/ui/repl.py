@@ -140,6 +140,17 @@ class REPL:
             self._renderer.print_system("Conversation cleared.")
             return
 
+        if text == "/compact":
+            system = self._agent._build_system_prompt()
+            summary = self._agent._context_mgr.summarize(system)
+            if summary:
+                self._renderer.print_system(
+                    f"Context compacted ({self._agent._context_mgr.summarization_count} total compressions)."
+                )
+            else:
+                self._renderer.print_system("Nothing to compact (conversation is short).")
+            return
+
         if text == "/memory":
             index = self._agent._memory.load_index()
             self._renderer.print_system(index or "No memories yet.")
@@ -158,7 +169,10 @@ class REPL:
         if text == "/skills":
             skills = self._agent._skill_manager.list_all()
             if skills:
-                lines = [f"/{s.name:20} — {s.description}" for s in skills]
+                lines = []
+                for s in skills:
+                    args = f"  args: {s.args_description}" if s.args_description else ""
+                    lines.append(f"/{s.name:20} — {s.description}{args}")
                 self._renderer.print_system("\n".join(lines))
             else:
                 self._renderer.print_system("No skills found.")
@@ -172,9 +186,18 @@ class REPL:
 
         if text.startswith("/model "):
             model = text.removeprefix("/model ").strip()
-            self._agent._config.save_global(model=model)
-            self._agent._llm.model = model
-            self._renderer.print_system(f"Model set to: {model}")
+            from agentic.core.config import detect_provider
+            from agentic.core.llm import create_llm_client
+            new_provider = detect_provider(model)
+            self._agent._config.save_global(model=model, provider=new_provider)
+            settings = self._agent._config.settings
+            self._agent._llm = create_llm_client(
+                provider=new_provider,
+                model=model,
+                api_key=settings.api_key,
+                openai_api_key=settings.openai_api_key,
+            )
+            self._renderer.print_system(f"Model: {model}  Provider: {new_provider}")
             return
 
         if text.startswith("/provider "):

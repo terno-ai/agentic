@@ -9,11 +9,9 @@ from agentic.tools.bash import BashTool
 from agentic.tools.task_tools import TaskStore, TaskCreateTool, TaskListTool, TaskUpdateTool
 
 
-@pytest.fixture(autouse=True)
-def clear_task_store():
-    TaskStore._tasks.clear()
-    yield
-    TaskStore._tasks.clear()
+@pytest.fixture
+def task_store():
+    return TaskStore()
 
 
 class TestReadTool:
@@ -148,22 +146,22 @@ class TestBashTool:
 
 class TestTaskTools:
     @pytest.mark.asyncio
-    async def test_create_and_list(self):
-        create = TaskCreateTool()
-        list_tool = TaskListTool()
+    async def test_create_and_list(self, task_store):
+        create = TaskCreateTool(task_store)
+        list_tool = TaskListTool(task_store)
 
         await create.execute(description="Test task")
         result = await list_tool.execute()
         assert "Test task" in result.content
 
     @pytest.mark.asyncio
-    async def test_update_status(self):
-        create = TaskCreateTool()
-        update = TaskUpdateTool()
+    async def test_update_status(self, task_store):
+        create = TaskCreateTool(task_store)
+        update = TaskUpdateTool(task_store)
 
         create_result = await create.execute(description="Task to update")
         task_id = create_result.content.split()[2].rstrip(":")  # "Created task <id>: ..."
 
         update_result = await update.execute(task_id=task_id, status="completed")
         assert not update_result.is_error
-        assert TaskStore.get(task_id).status == "completed"
+        assert task_store.get(task_id).status == "completed"

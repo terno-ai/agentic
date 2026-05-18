@@ -41,9 +41,16 @@ class TextDelta(StreamEvent):
 
 
 class ThinkingDelta(StreamEvent):
-    """Thinking block content from extended thinking (Claude 3.7+)."""
+    """Incremental thinking content while the thinking block is streaming."""
     def __init__(self, text: str):
         self.text = text
+
+
+class ThinkingBlockComplete(StreamEvent):
+    """A complete thinking block, ready to be stored in conversation history."""
+    def __init__(self, thinking: str, signature: str = ""):
+        self.thinking = thinking
+        self.signature = signature
 
 
 class ToolUseStart(StreamEvent):
@@ -153,26 +160,35 @@ class AnthropicClient:
                     current_tool_id: str | None = None
 
                     current_block_type: str = "text"
+                    current_thinking_buf: list[str] = []
                     async for event in stream:
                         started = True
                         if hasattr(event, "type"):
                             if event.type == "content_block_start":
                                 block = event.content_block
                                 current_block_type = block.type
-                                if block.type == "tool_use":
+                                if block.type == "thinking":
+                                    current_thinking_buf = []
+                                elif block.type == "tool_use":
                                     current_tool_id = block.id
                                     yield ToolUseStart(block.id, block.name)
                             elif event.type == "content_block_delta":
                                 delta = event.delta
                                 if hasattr(delta, "thinking"):
+                                    current_thinking_buf.append(delta.thinking)
                                     yield ThinkingDelta(delta.thinking)
                                 elif hasattr(delta, "text"):
                                     if current_block_type == "thinking":
+                                        current_thinking_buf.append(delta.text)
                                         yield ThinkingDelta(delta.text)
                                     else:
                                         yield TextDelta(delta.text)
                                 elif hasattr(delta, "partial_json") and current_tool_id:
                                     yield ToolInputDelta(current_tool_id, delta.partial_json)
+                            elif event.type == "content_block_stop":
+                                if current_block_type == "thinking" and current_thinking_buf:
+                                    yield ThinkingBlockComplete("".join(current_thinking_buf))
+                                    current_thinking_buf = []
                             elif event.type == "message_start":
                                 self.total_input_tokens += event.message.usage.input_tokens
                             elif event.type == "message_delta":

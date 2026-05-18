@@ -68,8 +68,9 @@ class MCPServerManager:
                 tool_defs = await client.list_tools()
                 for td in tool_defs:
                     tools.append(MCPTool(client, td, name))
-            except Exception:
-                pass
+            except Exception as e:
+                import sys
+                print(f"[MCP:{name}] failed to list tools: {e}", file=sys.stderr)
         return tools
 
     def is_connected(self, name: str) -> bool:

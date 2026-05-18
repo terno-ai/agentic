@@ -4,6 +4,26 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
+# $/million tokens — input, output, cache_read, cache_write
+# (approximate public list prices as of mid-2025; update as needed)
+_MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
+    "claude-opus-4-7":            (15.00, 75.00, 1.50,  18.75),
+    "claude-sonnet-4-6":          ( 3.00, 15.00, 0.30,   3.75),
+    "claude-haiku-4-5-20251001":  ( 0.80,  4.00, 0.08,   1.00),
+    "claude-3-7-sonnet":          ( 3.00, 15.00, 0.30,   3.75),
+    "gpt-4o":                     ( 2.50, 10.00, 1.25,   0.00),
+    "gpt-4o-mini":                ( 0.15,  0.60, 0.075,  0.00),
+    "o4-mini":                    ( 1.10,  4.40, 0.275,  0.00),
+    "o3":                         ( 10.0, 40.00, 2.50,   0.00),
+}
+
+def _cost_usd(model: str, inp: int, out: int, cache_read: int, cache_write: int) -> float:
+    key = next((k for k in _MODEL_PRICING if model.startswith(k)), None)
+    if key is None:
+        return 0.0
+    p_in, p_out, p_cr, p_cw = _MODEL_PRICING[key]
+    return (inp * p_in + out * p_out + cache_read * p_cr + cache_write * p_cw) / 1_000_000
+
 if TYPE_CHECKING:
     from agentic.core.conversation import ConversationHistory
     from agentic.core.llm import AnthropicClient
@@ -86,6 +106,7 @@ class ContextManager:
         self.keep_recent = keep_recent
         self._last_usage: dict[str, int] = {}
         self.summarization_count = 0
+        self._session_cost: float = 0.0
 
     def update_usage(self, input_tokens: int, output_tokens: int,
                      cache_read: int = 0, cache_write: int = 0) -> None:
@@ -95,6 +116,12 @@ class ContextManager:
             "cache_read": cache_read,
             "cache_write": cache_write,
         }
+        model = getattr(self._client, "model", "")
+        self._session_cost += _cost_usd(model, input_tokens, output_tokens, cache_read, cache_write)
+
+    @property
+    def session_cost(self) -> float:
+        return self._session_cost
 
     @property
     def last_input_tokens(self) -> int:

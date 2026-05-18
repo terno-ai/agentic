@@ -11,7 +11,7 @@ from typing import Any
 from agentic.core.config import ConfigManager
 from agentic.core.context import ContextManager
 from agentic.core.conversation import ConversationHistory
-from agentic.core.llm import create_llm_client, TextDelta, ThinkingDelta, ToolUseStart, ToolInputDelta, MessageComplete, UsageInfo
+from agentic.core.llm import create_llm_client, TextDelta, ThinkingDelta, ThinkingBlockComplete, ToolUseStart, ToolInputDelta, MessageComplete, UsageInfo
 from agentic.hooks.events import HookEvent
 from agentic.hooks.manager import HookManager
 from agentic.memory.manager import MemoryManager
@@ -91,18 +91,13 @@ Example flow for "build a todo app":
 - Trust framework guarantees; only validate at system boundaries.
 
 ## Memory system
-You have access to persistent memory. When you learn something important about:
-- The user's role, preferences, or expertise → save as 'user' memory
-- Behavioral guidance (corrections, confirmed approaches) → save as 'feedback' memory
-- Ongoing work, goals, or deadlines → save as 'project' memory
-- External resources or references → save as 'reference' memory
+You have access to persistent memory via the `MemoryWrite` tool. Call it proactively when you learn something worth remembering across sessions:
+- User's role, preferences, or expertise → type='user'
+- Behavioral corrections or confirmed approaches → type='feedback'
+- Ongoing work, goals, or deadlines → type='project'
+- External resources or references → type='reference'
 
-To save a memory, output a JSON block tagged with <memory_save>:
-```
-<memory_save>
-{"name": "SLUG", "description": "ONE-LINE SUMMARY", "type": "user|feedback|project|reference", "body": "CONTENT"}
-</memory_save>
-```
+Use a short kebab-case `name`, a one-line `description`, and a `body` that leads with the fact/rule then **Why:** and **How to apply:** lines for feedback/project types.
 
 ## Working directory
 <<CWD>>
@@ -188,6 +183,7 @@ class AgentLoop:
         self._tool_registry = ToolRegistry(permission_manager=self._permission_mgr)
         self._allowed_tools = allowed_tools
         self._iteration_count = 0
+        self._attached: set[str] = set()  # paths/URLs already attached this session
 
         self._setup_tools()
 
@@ -199,13 +195,16 @@ class AgentLoop:
             SandboxedReadTool, SandboxedWriteTool, SandboxedEditTool,
         )
         from agentic.tools.web_tools import WebFetchTool, WebSearchTool
-        from agentic.tools.search_tools import GrepTool, GlobTool
+        from agentic.tools.search_tools import GrepTool, GlobTool, LSTool
         from agentic.tools.task_tools import (
+            TaskStore,
             TaskCreateTool, TaskGetTool, TaskListTool,
             TaskUpdateTool, TaskStopTool, TaskOutputTool,
         )
+        task_store = TaskStore()
         from agentic.tools.agent_tool import AgentTool
         from agentic.tools.notification import AskUserQuestionTool, PushNotificationTool
+        from agentic.memory.tool import MemoryWriteTool
 
         if self._sandbox is not None:
             workspace = self._sandbox._workspace
@@ -226,17 +225,19 @@ class AgentLoop:
             edit_tool,
             WebFetchTool(),
             WebSearchTool(),
-            GrepTool(),
-            GlobTool(),
-            TaskCreateTool(),
-            TaskGetTool(),
-            TaskListTool(),
-            TaskUpdateTool(),
-            TaskStopTool(),
-            TaskOutputTool(),
+            GrepTool(sandbox=self._sandbox),
+            GlobTool(sandbox=self._sandbox),
+            LSTool(sandbox=self._sandbox),
+            TaskCreateTool(task_store),
+            TaskGetTool(task_store),
+            TaskListTool(task_store),
+            TaskUpdateTool(task_store),
+            TaskStopTool(task_store),
+            TaskOutputTool(task_store),
             AgentTool(config_manager=self._config),
             AskUserQuestionTool(ask_fn=self._ask_user if not self._is_subagent else None),
             PushNotificationTool(),
+            MemoryWriteTool(self._memory),
         ]
 
         if self._kernel is not None:
@@ -294,6 +295,16 @@ class AgentLoop:
         settings = self._config.settings
         if settings.auto_memory:
             system_text += AUTO_MEMORY_HINT
+
+        # Project-specific extra instructions from .agentic/prompt.md
+        extra_prompt_path = Path.cwd() / ".agentic" / "prompt.md"
+        if extra_prompt_path.exists():
+            try:
+                extra = extra_prompt_path.read_text(encoding="utf-8").strip()
+                if extra:
+                    system_text += f"\n\n## Project-specific instructions\n{extra}"
+            except Exception:
+                pass
 
         if self._sandbox is not None:
             sb = settings.sandbox
@@ -437,6 +448,7 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
 
             # Collect streaming response
             assistant_text = ""
+            thinking_blocks: list[dict[str, Any]] = []
             tool_calls: list[dict[str, Any]] = []
             current_tool: dict[str, Any] | None = None
             current_json_parts: list[str] = []
@@ -454,6 +466,10 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                 if isinstance(event, ThinkingDelta):
                     if self._renderer and not self._is_subagent:
                         self._renderer.stream_thinking(event.text)
+
+                elif isinstance(event, ThinkingBlockComplete):
+                    # Store completed thinking block to echo back on the next turn
+                    thinking_blocks.append({"type": "thinking", "thinking": event.thinking})
 
                 elif isinstance(event, TextDelta):
                     assistant_text += event.text
@@ -482,8 +498,8 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                         current_tool = None
                         current_json_parts = []
 
-                    # Build assistant content for the message
-                    content: list[dict[str, Any]] = []
+                    # Build assistant content — thinking blocks must come first
+                    content: list[dict[str, Any]] = list(thinking_blocks)
                     if assistant_text:
                         content.append({"type": "text", "text": assistant_text})
                     for tc in tool_calls:
@@ -498,10 +514,6 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             if self._renderer and not self._is_subagent:
                 self._renderer.finish_streaming()
 
-            # Process auto-memory tags in assistant text
-            if assistant_text:
-                await self._process_memory_tags(assistant_text)
-
             await self._hook_mgr.fire(
                 HookEvent.ASSISTANT_MESSAGE,
                 {"message": assistant_text},
@@ -515,6 +527,7 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                         self._renderer.print_usage(
                             u.get("input", 0), u.get("output", 0),
                             u.get("cache_read", 0), u.get("cache_write", 0),
+                            session_cost=self._context_mgr.session_cost,
                         )
                     status = self._context_mgr.status_line()
                     self._renderer.print_context_status(status)
@@ -523,7 +536,45 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             # Execute all tool calls for this turn concurrently
             await self._execute_tools_parallel(tool_calls)
 
-        return self._conversation.last_assistant_text()
+        # Max iterations reached — tell the model so it can wrap up cleanly
+        limit = settings.max_tool_iterations
+        stop_msg = (
+            f"[max_tool_iterations={limit} reached — stopping tool loop. "
+            "Summarise what was accomplished and what remains.]"
+        )
+        self._conversation.add_user(stop_msg)
+        if self._renderer and not self._is_subagent:
+            self._renderer.print_system(
+                f"⚠ Max tool iterations ({limit}) reached. Asking agent to summarise."
+            )
+        return await self._agent_loop_single_turn()
+
+    async def _agent_loop_single_turn(self) -> str:
+        """One final LLM call with no tools — used after max_iterations to get a summary."""
+        settings = self._config.settings
+        system = self._build_system_prompt()
+        assistant_text = ""
+        if self._renderer and not self._is_subagent:
+            self._renderer.print_assistant_start()
+        async for event in self._llm.stream_message(
+            messages=self._conversation.messages,
+            system=system,
+            tools=None,
+            max_tokens=settings.max_tokens,
+        ):
+            if isinstance(event, TextDelta):
+                assistant_text += event.text
+                if self._renderer and not self._is_subagent:
+                    self._renderer.stream_text(event.text)
+            elif isinstance(event, UsageInfo):
+                self._context_mgr.update_usage(
+                    event.input_tokens, event.output_tokens,
+                    event.cache_read, event.cache_write,
+                )
+        if self._renderer and not self._is_subagent:
+            self._renderer.finish_streaming()
+        self._conversation.add_assistant(assistant_text)
+        return assistant_text
 
     async def _execute_tools_parallel(self, tool_calls: list[dict[str, Any]]) -> None:
         """Print all tool-call headers, run them concurrently, then print results in order."""
@@ -532,24 +583,46 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             for tc in tool_calls:
                 self._renderer.print_tool_call(tc["name"], tc["input"])
 
-        async def _run(tc: dict[str, Any]) -> tuple[dict[str, Any], "ToolResult"]:
+        async def _run(tc: dict[str, Any]) -> tuple[dict[str, Any], "ToolResult", float]:
+            import time
             await self._hook_mgr.fire(
                 HookEvent.PRE_TOOL_CALL,
                 {"tool_name": tc["name"], "tool_input": tc["input"]},
             )
-            result = await self._tool_registry.execute(tc["name"], tc["input"])
+            t0 = time.monotonic()
+            if self._renderer and not self._is_subagent:
+                spinner = self._renderer.start_spinner(tc["name"])
+            else:
+                spinner = None
+            try:
+                result = await self._tool_registry.execute(tc["name"], tc["input"])
+            finally:
+                elapsed = time.monotonic() - t0
+                if spinner is not None:
+                    self._renderer.stop_spinner(spinner)
             await self._hook_mgr.fire(
                 HookEvent.POST_TOOL_CALL,
                 {"tool_name": tc["name"], "tool_input": tc["input"], "tool_result": result.content},
             )
-            return tc, result
+            return tc, result, elapsed
 
         results = await asyncio.gather(*[_run(tc) for tc in tool_calls])
 
-        for tc, result in results:
+        for tc, result, elapsed in results:
             if self._renderer and not self._is_subagent:
-                self._renderer.print_tool_result(tc["name"], result.content, result.is_error)
-            self._conversation.add_tool_result(tc["id"], result.content, result.is_error)
+                self._renderer.print_tool_result(tc["name"], result.content, result.is_error, elapsed)
+
+            # Images returned by ReadTool are passed as vision content blocks
+            if result.metadata.get("image") and not result.is_error:
+                content_str = result.content  # "[image:image/png:<b64>]"
+                media_type = result.metadata.get("media_type", "image/png")
+                b64 = content_str.split(":", 2)[2].rstrip("]")
+                self._conversation.add_tool_result(
+                    tc["id"],
+                    [{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}],
+                )
+            else:
+                self._conversation.add_tool_result(tc["id"], result.content, result.is_error)
 
     async def _finalize_tool_call(
         self,
@@ -582,9 +655,10 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             raw = m.group(1)
             path = Path(raw).expanduser()
             key = str(path)
-            if key in seen:
+            if key in seen or key in self._attached:
                 continue
             seen.add(key)
+            self._attached.add(key)
             if path.is_file():
                 try:
                     text = path.read_text(encoding="utf-8", errors="replace")
@@ -599,9 +673,10 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
 
         for m in self._URL_RE.finditer(message):
             url = m.group(0)
-            if url in seen:
+            if url in seen or url in self._attached:
                 continue
             seen.add(url)
+            self._attached.add(url)
             try:
                 import httpx
                 async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:

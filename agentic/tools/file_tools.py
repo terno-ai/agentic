@@ -2,12 +2,39 @@
 
 from __future__ import annotations
 
+import base64
 import difflib
+import re
 from pathlib import Path
 
 from agentic.tools.base import Tool, ToolResult
 
 MAX_READ_CHARS = 50_000
+
+# Files that commonly contain secrets — warn before reading
+_SENSITIVE_PATTERNS = re.compile(
+    r"(^|/)("
+    r"\.env(\.\w+)?|"
+    r"\.secrets?|"
+    r"id_rsa|id_ed25519|id_ecdsa|id_dsa|"
+    r".*\.pem|.*\.key|.*\.p12|.*\.pfx|"
+    r"credentials(\.json)?|"
+    r"service.account\.json|"
+    r".*\.netrc|"
+    r"\.aws/credentials|"
+    r"\.ssh/.*"
+    r")$",
+    re.IGNORECASE,
+)
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 def _tail_truncate(text: str, max_chars: int) -> str:
@@ -40,11 +67,33 @@ class ReadTool(Tool):
     }
 
     async def execute(self, file_path: str, offset: int = 0, limit: int | None = None) -> ToolResult:
-        path = Path(file_path)
+        path = Path(file_path).expanduser()
         if not path.exists():
             return ToolResult.error(f"File not found: {file_path}")
         if not path.is_file():
             return ToolResult.error(f"Not a file: {file_path}")
+
+        # Warn on sensitive files (don't block — agent may have a legitimate reason)
+        if _SENSITIVE_PATTERNS.search(file_path.replace("\\", "/")):
+            warning = f"⚠️  Reading potentially sensitive file: {file_path}\n\n"
+        else:
+            warning = ""
+
+        # Images: return as base64 vision content block
+        suffix = path.suffix.lower()
+        if suffix in _IMAGE_SUFFIXES:
+            try:
+                raw = path.read_bytes()
+                b64 = base64.standard_b64encode(raw).decode()
+                media_type = _IMAGE_MEDIA_TYPES[suffix]
+                # Return a special marker the agent loop can detect and convert to
+                # an image content block for vision-capable models.
+                return ToolResult.ok(
+                    f"[image:{media_type}:{b64}]",
+                    image=True, media_type=media_type,
+                )
+            except Exception as e:
+                return ToolResult.error(f"Cannot read image {file_path}: {e}")
 
         # Detect binary
         try:
@@ -64,7 +113,7 @@ class ReadTool(Tool):
             f"{i + start + 1}\t{line}" for i, line in enumerate(selected)
         )
         numbered = _tail_truncate(numbered, MAX_READ_CHARS)
-        return ToolResult.ok(numbered, lines_read=len(selected), total_lines=len(lines))
+        return ToolResult.ok(warning + numbered, lines_read=len(selected), total_lines=len(lines))
 
 
 class WriteTool(Tool):

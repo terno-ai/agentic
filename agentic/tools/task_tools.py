@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime
 from typing import Any
@@ -23,11 +22,12 @@ class TaskRecord(BaseModel):
 
 
 class TaskStore:
-    """In-memory task store (shared across tool instances)."""
-    _tasks: dict[str, TaskRecord] = {}
+    """Per-instance task store — each AgentLoop (including sub-agents) gets its own."""
 
-    @classmethod
-    def create(cls, description: str, **meta: Any) -> TaskRecord:
+    def __init__(self) -> None:
+        self._tasks: dict[str, TaskRecord] = {}
+
+    def create(self, description: str, **meta: Any) -> TaskRecord:
         task = TaskRecord(
             id=str(uuid.uuid4())[:8],
             description=description,
@@ -35,27 +35,24 @@ class TaskStore:
             updated_at=datetime.now().isoformat(),
             metadata=meta,
         )
-        cls._tasks[task.id] = task
+        self._tasks[task.id] = task
         return task
 
-    @classmethod
-    def get(cls, task_id: str) -> TaskRecord | None:
-        return cls._tasks.get(task_id)
+    def get(self, task_id: str) -> TaskRecord | None:
+        return self._tasks.get(task_id)
 
-    @classmethod
-    def update(cls, task_id: str, **kwargs: Any) -> TaskRecord | None:
-        task = cls._tasks.get(task_id)
+    def update(self, task_id: str, **kwargs: Any) -> TaskRecord | None:
+        task = self._tasks.get(task_id)
         if not task:
             return None
         data = task.model_dump()
         data.update(kwargs)
         data["updated_at"] = datetime.now().isoformat()
-        cls._tasks[task_id] = TaskRecord(**data)
-        return cls._tasks[task_id]
+        self._tasks[task_id] = TaskRecord(**data)
+        return self._tasks[task_id]
 
-    @classmethod
-    def list_all(cls) -> list[TaskRecord]:
-        return list(cls._tasks.values())
+    def list_all(self) -> list[TaskRecord]:
+        return list(self._tasks.values())
 
 
 class TaskCreateTool(Tool):
@@ -69,8 +66,11 @@ class TaskCreateTool(Tool):
         "required": ["description"],
     }
 
+    def __init__(self, store: TaskStore) -> None:
+        self._store = store
+
     async def execute(self, description: str) -> ToolResult:
-        task = TaskStore.create(description)
+        task = self._store.create(description)
         return ToolResult.ok(f"Created task {task.id}: {description}")
 
 
@@ -85,8 +85,11 @@ class TaskGetTool(Tool):
         "required": ["task_id"],
     }
 
+    def __init__(self, store: TaskStore) -> None:
+        self._store = store
+
     async def execute(self, task_id: str) -> ToolResult:
-        task = TaskStore.get(task_id)
+        task = self._store.get(task_id)
         if not task:
             return ToolResult.error(f"Task not found: {task_id}")
         lines = [
@@ -111,8 +114,11 @@ class TaskListTool(Tool):
         },
     }
 
+    def __init__(self, store: TaskStore) -> None:
+        self._store = store
+
     async def execute(self, status: str | None = None) -> ToolResult:
-        tasks = TaskStore.list_all()
+        tasks = self._store.list_all()
         if status:
             tasks = [t for t in tasks if t.status == status]
         if not tasks:
@@ -138,13 +144,16 @@ class TaskUpdateTool(Tool):
         "required": ["task_id"],
     }
 
+    def __init__(self, store: TaskStore) -> None:
+        self._store = store
+
     async def execute(self, task_id: str, status: str | None = None, output: str | None = None) -> ToolResult:
         kwargs: dict[str, Any] = {}
         if status:
             kwargs["status"] = status
         if output:
             kwargs["output"] = output
-        task = TaskStore.update(task_id, **kwargs)
+        task = self._store.update(task_id, **kwargs)
         if not task:
             return ToolResult.error(f"Task not found: {task_id}")
         return ToolResult.ok(f"Updated task {task_id}: status={task.status}")
@@ -161,8 +170,11 @@ class TaskStopTool(Tool):
         "required": ["task_id"],
     }
 
+    def __init__(self, store: TaskStore) -> None:
+        self._store = store
+
     async def execute(self, task_id: str) -> ToolResult:
-        task = TaskStore.update(task_id, status="stopped")
+        task = self._store.update(task_id, status="stopped")
         if not task:
             return ToolResult.error(f"Task not found: {task_id}")
         return ToolResult.ok(f"Stopped task {task_id}")
@@ -179,8 +191,11 @@ class TaskOutputTool(Tool):
         "required": ["task_id"],
     }
 
+    def __init__(self, store: TaskStore) -> None:
+        self._store = store
+
     async def execute(self, task_id: str) -> ToolResult:
-        task = TaskStore.get(task_id)
+        task = self._store.get(task_id)
         if not task:
             return ToolResult.error(f"Task not found: {task_id}")
         return ToolResult.ok(task.output or "(no output yet)")
