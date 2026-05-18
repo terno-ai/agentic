@@ -19,6 +19,9 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 - **Skills** — slash commands (`/review`, `/init`, `/simplify`, `/security-review`, `/test`) with YAML-defined custom skills
 - **MCP Integration** — connect any MCP server via stdio; its tools appear automatically in the agent
 - **Context Summarization** — auto-summarizes conversation while preserving critical project facts (platform, language, entry point); prompt cache warming for Anthropic
+- **Extended thinking** — `/think [N|off]` enables Claude's extended thinking mode (Claude 3.7+); thinking shown inline as dimmed `[thinking]…[/thinking]` blocks
+- **File/URL auto-detection** — file paths and URLs mentioned in a message are pre-read/fetched and attached as context before the LLM turn — no extra tool call needed
+- **Multi-line input** — `Esc+Enter` inserts a newline; `Enter` submits
 - **Planning + task tracking** — agent creates a task list before non-trivial work and marks each step in_progress / completed live
 - **Permissions** — glob-based allow/deny rules; auto-bypassed inside the sandbox (container is the boundary)
 - **Hooks** — shell commands triggered on agent events (PreToolCall, PostToolCall, AgentStart, …)
@@ -119,12 +122,31 @@ agentic config model claude-sonnet-4-6 --global
 | `/memory` | Show memory index |
 | `/memory search <query>` | Search memories |
 | `/btw <note>` | Save a note to memory instantly — no LLM call |
+| `/think [N\|off]` | Enable extended thinking with N token budget (Claude 3.7+ only) |
 | `/plan` | Toggle plan mode (read-only, no edits) |
 | `/clear` | Clear conversation history |
 | `/! <cmd>` or `!<cmd>` | Run a shell command directly |
 | `/exit` or Ctrl+D | Exit |
 
 **Ctrl+C** during an agent turn interrupts and cancels the current response immediately.
+
+**Multi-line input** — `Esc+Enter` (or `Alt+Enter`) inserts a newline; `Enter` submits.
+
+**File/URL auto-detection** — mention a file path (e.g. `look at /src/app.py`) or a URL and the agent pre-reads/fetches it before responding — no extra tool call needed.
+
+## Extended Thinking
+
+When using Claude 3.7+ models, the agent can reason step-by-step before responding. Enable it with the `/think` REPL command:
+
+```
+/think          # enable with default 8 000-token budget
+/think 16000    # larger budget for harder problems
+/think off      # disable
+```
+
+Thinking content is streamed in real-time as dimmed `[thinking]…[/thinking]` blocks before the assistant's response. The budget counts against your token usage but is not billed at the same rate as output tokens.
+
+> **Note:** Extended thinking requires `claude-3-7-sonnet` or later. It is silently ignored on other models.
 
 ## Python Kernel
 
@@ -453,6 +475,6 @@ ruff check agentic/     # lint
 | `WebFetch` | Fetch a URL and return readable text |
 | `WebSearch` | DuckDuckGo search, no API key required |
 | `TaskCreate/Update/List` | Track in-session TODO items |
-| `Agent` | Spawn a sub-agent for a focused subtask |
+| `Agent` | Spawn a sub-agent; background tasks return a `task_id` you can poll |
 | `PythonKernel` | Persistent Python interpreter (requires `--kernel`) |
 | `AskUserQuestion` | Prompt the user for input mid-task |
