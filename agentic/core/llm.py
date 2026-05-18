@@ -374,6 +374,7 @@ class OpenAIClient:
         system: str | list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 8192,
+        thinking_budget: int = 0,  # accepted but ignored — OpenAI has no equivalent
     ) -> AsyncIterator[StreamEvent]:
         openai_msgs = _anthropic_messages_to_openai(messages, system)
         openai_tools = _anthropic_tools_to_openai(tools) if tools else None
