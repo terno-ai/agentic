@@ -5,17 +5,26 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 ## Features
 
 - **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including reasoning models o1/o3/o4-mini), switchable mid-session
+- **Persistent bash shell** — `cd`, env vars, and shell state survive between tool calls; no fresh subprocess per command
+- **Parallel tool execution** — independent tool calls in one LLM turn run concurrently via `asyncio.gather`
+- **Grep + Glob tools** — structured file search (ripgrep-backed) and pattern-based file listing, separate from raw bash
+- **Stream interruption** — Ctrl+C cancels the current agent turn cleanly mid-stream
+- **API retry** — exponential backoff with jitter on rate limits and transient errors (both providers)
+- **Diff rendering** — coloured unified diff shown inline whenever `Edit` modifies a file
+- **Tail truncation** — all tools keep the most recent output on overflow (`[N chars omitted from start]`)
 - **Persistent Python Kernel** — IPython-style kernel retains variables between calls; ideal for data science; captures stdout/stderr separately; handles stdin, OOM, timeouts, and hangs
 - **Multi-user Docker Sandbox** — each user gets a dedicated, isolated container and workspace; containers persist between sessions preserving installed packages and files
-- **Interactive REPL** — readline history, tab completion, slash commands
+- **Interactive REPL** — readline history, tab completion, slash commands including `/btw` for instant memory notes
 - **Persistent Memory** — file-based memory across sessions (user / feedback / project / reference types) with smart context retention
 - **Skills** — slash commands (`/review`, `/init`, `/simplify`, `/security-review`, `/test`) with YAML-defined custom skills
 - **MCP Integration** — connect any MCP server via stdio; its tools appear automatically in the agent
-- **Context Summarization** — auto-summarizes conversation while preserving critical project facts (platform, language, entry point)
-- **Permissions** — glob-based allow/deny rules for tool execution with interactive prompting
+- **Context Summarization** — auto-summarizes conversation while preserving critical project facts (platform, language, entry point); prompt cache warming for Anthropic
+- **Planning + task tracking** — agent creates a task list before non-trivial work and marks each step in_progress / completed live
+- **Permissions** — glob-based allow/deny rules; auto-bypassed inside the sandbox (container is the boundary)
 - **Hooks** — shell commands triggered on agent events (PreToolCall, PostToolCall, AgentStart, …)
 - **Scheduling** — cron / interval autonomous agent runs via APScheduler
 - **Sub-agents** — spawn specialized child agents for focused subtasks
+- **Token usage display** — input / output / cache token counts shown after each assistant turn
 - **SWE-bench harness** — evaluate on SWE-bench Lite with two-layer feedback loop (syntax check + test execution)
 
 ## Quick Start
@@ -109,10 +118,13 @@ agentic config model claude-sonnet-4-6 --global
 | `/provider <anthropic\|openai>` | Switch provider |
 | `/memory` | Show memory index |
 | `/memory search <query>` | Search memories |
+| `/btw <note>` | Save a note to memory instantly — no LLM call |
 | `/plan` | Toggle plan mode (read-only, no edits) |
 | `/clear` | Clear conversation history |
 | `/! <cmd>` or `!<cmd>` | Run a shell command directly |
 | `/exit` or Ctrl+D | Exit |
+
+**Ctrl+C** during an agent turn interrupts and cancels the current response immediately.
 
 ## Python Kernel
 
@@ -227,9 +239,11 @@ Python 3, pip, Node.js 20, npm, curl, wget, git, ffmpeg, ripgrep, build tools, C
 
 Set `"network": "none"` to block internet access. Set `"memory_limit": "2g"` for heavier workloads.
 
-**`cd` persists between commands** — working directory is tracked across calls so multi-step workflows behave naturally.
+**`cd` persists between commands** — the shell process is persistent; working directory, environment variables, and shell functions survive between calls.
 
 **File tools (Read/Write/Edit) are sandbox-aware** — `/workspace/...` paths are automatically remapped to the user's host workspace, so the agent works with consistent paths regardless of tool used.
+
+**No permission prompts inside the sandbox** — the container is the isolation boundary, so tool calls are auto-approved.
 
 ## Built-in Skills
 
@@ -394,7 +408,7 @@ python -m swebench.harness.run_evaluation \
 ```
 agentic/
 ├── core/          # Agent loop, LLM clients (Anthropic + OpenAI), context, config
-├── tools/         # Read, Write, Edit, Bash, WebFetch, WebSearch, Task*, Agent
+├── tools/         # Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Task*, Agent
 ├── memory/        # Persistent memory with MEMORY.md index
 ├── skills/        # Slash-command skills (YAML) + built-ins
 ├── kernel/        # Persistent Python kernel (worker, manager, tool, config)
@@ -425,3 +439,20 @@ pip install -e ".[dev]"
 pytest                  # run all tests (160 passing)
 ruff check agentic/     # lint
 ```
+
+## Tools reference
+
+| Tool | Description |
+|---|---|
+| `Read` | Read a file with line numbers; binary-safe; tail-truncates large files |
+| `Write` | Create or overwrite a file |
+| `Edit` | Replace a string in a file; whitespace-tolerant; shows coloured diff |
+| `Bash` | Persistent shell — cwd, env, and functions survive between calls |
+| `Grep` | Regex search across files (ripgrep if available, else grep) |
+| `Glob` | List files matching a pattern (e.g. `**/*.py`) |
+| `WebFetch` | Fetch a URL and return readable text |
+| `WebSearch` | DuckDuckGo search, no API key required |
+| `TaskCreate/Update/List` | Track in-session TODO items |
+| `Agent` | Spawn a sub-agent for a focused subtask |
+| `PythonKernel` | Persistent Python interpreter (requires `--kernel`) |
+| `AskUserQuestion` | Prompt the user for input mid-task |
