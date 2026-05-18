@@ -70,3 +70,7 @@ class SandboxedBashTool(BashTool):
             )
         except Exception as e:
             return ToolResult.error(f"Sandbox error: {e}")
+
+    async def terminate(self) -> None:
+        # No persistent shell to clean up — execution routes through docker exec
+        pass
