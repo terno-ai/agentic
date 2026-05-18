@@ -134,6 +134,12 @@ class Renderer:
     def print_system(self, text: str) -> None:
         self.console.print(f"[system]{text}[/system]")
 
+    def print_markdown(self, text: str) -> None:
+        try:
+            self.console.print(Markdown(text))
+        except Exception:
+            self.console.print(text)
+
     def print_memory_saved(self, name: str, memory_type: str) -> None:
         self.console.print(f"[memory]💾 Memory saved: {name} ({memory_type})[/memory]")
 
@@ -184,6 +190,7 @@ class Renderer:
 - `/skills` — list available skills
 - `/memory` — show memory index
 - `/memory search <query>` — search memories
+- `/history` — show condensed conversation transcript
 - `/config` — show current settings
 - `/model <name>` — switch model (e.g. gpt-4o, claude-opus-4-7)
 - `/provider <anthropic|openai>` — switch provider
@@ -222,8 +229,11 @@ class Renderer:
         if tool_name == "Bash":
             cmd = tool_input.get("command", "")
             return cmd[:80] + ("..." if len(cmd) > 80 else "")
-        elif tool_name in ("Read", "Write", "Edit"):
+        elif tool_name in ("Read", "Write", "Edit", "MultiEdit"):
             path = tool_input.get("file_path", "")
+            if tool_name == "MultiEdit":
+                n = len(tool_input.get("edits", []))
+                return f"{path} ({n} edits)"
             return path
         elif tool_name == "WebFetch":
             return tool_input.get("url", "")
@@ -231,6 +241,10 @@ class Renderer:
             return tool_input.get("query", "")
         elif tool_name == "Agent":
             return tool_input.get("description", "")
+        elif tool_name == "MemoryWrite":
+            name = tool_input.get("name", "")
+            mtype = tool_input.get("type", "")
+            return f"{name} ({mtype})"
         else:
             parts = [f"{k}={repr(v)[:30]}" for k, v in list(tool_input.items())[:2]]
             return ", ".join(parts)

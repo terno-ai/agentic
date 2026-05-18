@@ -32,7 +32,7 @@ class WebFetchTool(Tool):
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 timeout=30,
-                headers={"User-Agent": "agentic/0.1 (autonomous agent)"},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
@@ -95,6 +95,15 @@ class WebSearchTool(Tool):
                     data={"q": query, "kl": "us-en"},
                 )
                 text = resp.text
+
+            # Detect CAPTCHA / bot-protection page
+            if "duckduckgo.com/sorry" in text or "unusual traffic" in text.lower() or (
+                "CAPTCHA" in text and len(text) < 5000
+            ):
+                return ToolResult.error(
+                    "DuckDuckGo returned a bot-detection page. "
+                    "Try again in a moment or use WebFetch with a direct URL."
+                )
 
             results = self._parse_ddg(text, num_results)
             if not results:

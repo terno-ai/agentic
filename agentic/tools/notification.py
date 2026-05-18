@@ -34,7 +34,10 @@ class AskUserQuestionTool(Tool):
         if self._ask_fn:
             answer = await self._ask_fn(question, options or [])
             return ToolResult.ok(answer)
-        return ToolResult.ok(f"(Question asked: {question})")
+        return ToolResult.ok(
+            "(Sub-agent cannot ask the user questions directly. "
+            "The caller must provide all necessary context in the prompt.)"
+        )
 
 
 class PushNotificationTool(Tool):

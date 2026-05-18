@@ -211,3 +211,88 @@ class EditTool(Tool):
         diff_text = "\n".join(diff[:80])
         summary = f"Replaced {n} occurrence(s) in {path.name}"
         return ToolResult.ok(f"{summary}\n{diff_text}" if diff_text else summary)
+
+
+class MultiEditTool(Tool):
+    """Apply multiple edits to the same file atomically in one call.
+
+    Each edit is `{old_string, new_string, replace_all?}` applied in sequence.
+    If any edit fails, the file is left unchanged (all-or-nothing).
+    """
+    name = "MultiEdit"
+    description = (
+        "Apply multiple find-and-replace edits to one file in a single call. "
+        "Edits are applied in order; if any fails the file is not modified. "
+        "Use this instead of multiple Edit calls on the same file."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "Absolute path to the file"},
+            "edits": {
+                "type": "array",
+                "description": "List of edits to apply in order",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                        "replace_all": {"type": "boolean", "default": False},
+                    },
+                    "required": ["old_string", "new_string"],
+                },
+            },
+        },
+        "required": ["file_path", "edits"],
+    }
+
+    async def execute(self, file_path: str, edits: list[dict]) -> ToolResult:
+        path = Path(file_path)
+        if not path.exists():
+            return ToolResult.error(f"File not found: {file_path}")
+        try:
+            original = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return ToolResult.error(f"Cannot read {file_path}: {e}")
+
+        current = original
+        applied = 0
+        for i, edit in enumerate(edits):
+            old = edit.get("old_string", "")
+            new = edit.get("new_string", "")
+            replace_all = edit.get("replace_all", False)
+
+            if old not in current:
+                norm_cur = _norm_lines(current)
+                norm_old = _norm_lines(old)
+                if norm_old in norm_cur:
+                    current, old = norm_cur, norm_old
+                else:
+                    return ToolResult.error(
+                        f"Edit {i + 1}/{len(edits)}: old_string not found in {file_path}. "
+                        "File was not modified."
+                    )
+
+            count = current.count(old)
+            if count > 1 and not replace_all:
+                return ToolResult.error(
+                    f"Edit {i + 1}/{len(edits)}: old_string appears {count} times. "
+                    "Use replace_all=true or provide more context. File was not modified."
+                )
+
+            current = current.replace(old, new) if replace_all else current.replace(old, new, 1)
+            applied += 1
+
+        try:
+            path.write_text(current, encoding="utf-8")
+        except Exception as e:
+            return ToolResult.error(f"Cannot write {file_path}: {e}")
+
+        diff = list(difflib.unified_diff(
+            original.splitlines(), current.splitlines(),
+            fromfile=f"a/{path.name}", tofile=f"b/{path.name}",
+            lineterm="",
+        ))
+        diff_text = "\n".join(diff[:120])
+        summary = f"Applied {applied}/{len(edits)} edits to {path.name}"
+        return ToolResult.ok(f"{summary}\n{diff_text}" if diff_text else summary)

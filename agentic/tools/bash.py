@@ -141,11 +141,19 @@ class BashTool(Tool):
     async def _run_persistent(self, command: str, timeout_s: float) -> ToolResult:
         try:
             output, exit_code = await self._get_shell().run(command, timeout_s)
+        except asyncio.CancelledError:
+            # Agent turn was cancelled — kill the shell so it doesn't linger
+            if self._shell:
+                await self._shell.terminate()
+                self._shell = None
+            raise
         except asyncio.TimeoutError:
             return ToolResult.error(f"Command timed out after {timeout_s:.0f}s: {command}")
         except Exception as e:
             return ToolResult.error(f"Shell error: {e}")
 
+        # Strip the leading blank line that printf '\n...' adds before the sentinel
+        output = output.lstrip("\n")
         output = _tail_truncate(output, MAX_OUTPUT_CHARS)
 
         if exit_code != 0:

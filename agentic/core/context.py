@@ -107,6 +107,16 @@ class ContextManager:
         self._last_usage: dict[str, int] = {}
         self.summarization_count = 0
         self._session_cost: float = 0.0
+        self._task_store: Any | None = None  # injected by AgentLoop after tool setup
+
+    def _active_tasks_text(self) -> str:
+        if self._task_store is None:
+            return ""
+        tasks = self._task_store.list_all()
+        active = [t for t in tasks if t.status not in ("completed", "failed", "stopped")]
+        if not active:
+            return ""
+        return "\n".join(f"  [{t.id}] {t.status} — {t.description}" for t in active)
 
     def update_usage(self, input_tokens: int, output_tokens: int,
                      cache_read: int = 0, cache_write: int = 0) -> None:
@@ -140,9 +150,15 @@ class ContextManager:
         if not to_summarize:
             return None
 
+        # Inject active task list into the summarization prompt so it's preserved
+        task_section = self._active_tasks_text()
+        prompt = SUMMARIZE_PROMPT
+        if task_section:
+            prompt = f"{SUMMARIZE_PROMPT}\n\n8. **Active tasks** (CRITICAL — preserve these exactly):\n{task_section}"
+
         summary_request = [
             *to_summarize,
-            {"role": "user", "content": SUMMARIZE_PROMPT},
+            {"role": "user", "content": prompt},
         ]
 
         try:

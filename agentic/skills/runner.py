@@ -13,7 +13,16 @@ class SkillRunner:
 
     @staticmethod
     def build_prompt(skill: "SkillDefinition", args: str = "") -> str:
-        """Format the skill prompt with the given args."""
+        """Format the skill prompt with the given args.
+
+        Returns a (prompt, warning) tuple via the warning embedded in the prompt
+        when args are empty but the skill template expects them.
+        """
+        uses_args = "{{args}}" in skill.prompt or "{{ args }}" in skill.prompt
+        if uses_args and not args.strip():
+            hint = f"\n\n(Note: this skill expects arguments — {skill.args_description or 'see /skills'})" \
+                   if skill.args_description else ""
+            return skill.format_prompt(args) + hint
         return skill.format_prompt(args)
 
     @staticmethod

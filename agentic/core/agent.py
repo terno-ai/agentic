@@ -109,6 +109,30 @@ Use a short kebab-case `name`, a one-line `description`, and a `body` that leads
 <<MEMORY_INDEX>>
 """
 
+def _git_status_snippet() -> str:
+    """Return a compact git status string, or empty string if not a git repo."""
+    import subprocess
+    try:
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=3, cwd=Path.cwd(),
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True, text=True, timeout=3, cwd=Path.cwd(),
+        ).stdout.strip()
+        if not branch:
+            return ""
+        lines = [f"branch: {branch}"]
+        if status:
+            lines.append(status)
+        else:
+            lines.append("(clean)")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 AUTO_MEMORY_HINT = """
 ## When to save memories
 
@@ -189,7 +213,7 @@ class AgentLoop:
 
     def _setup_tools(self) -> None:
         from agentic.tools.bash import BashTool
-        from agentic.tools.file_tools import ReadTool, WriteTool, EditTool
+        from agentic.tools.file_tools import ReadTool, WriteTool, EditTool, MultiEditTool
         from agentic.sandbox.sandboxed_bash import SandboxedBashTool
         from agentic.sandbox.sandboxed_file_tools import (
             SandboxedReadTool, SandboxedWriteTool, SandboxedEditTool,
@@ -202,6 +226,7 @@ class AgentLoop:
             TaskUpdateTool, TaskStopTool, TaskOutputTool,
         )
         task_store = TaskStore()
+        self._context_mgr._task_store = task_store
         from agentic.tools.agent_tool import AgentTool
         from agentic.tools.notification import AskUserQuestionTool, PushNotificationTool
         from agentic.memory.tool import MemoryWriteTool
@@ -209,20 +234,23 @@ class AgentLoop:
         if self._sandbox is not None:
             workspace = self._sandbox._workspace
             bash_tool  = SandboxedBashTool(self._sandbox)
-            read_tool  = SandboxedReadTool(workspace)
-            write_tool = SandboxedWriteTool(workspace)
-            edit_tool  = SandboxedEditTool(workspace)
+            read_tool   = SandboxedReadTool(workspace)
+            write_tool  = SandboxedWriteTool(workspace)
+            edit_tool   = SandboxedEditTool(workspace)
+            medit_tool  = MultiEditTool()   # MultiEdit always runs on host (remapped paths)
         else:
-            bash_tool  = BashTool(cwd=Path.cwd())
-            read_tool  = ReadTool()
-            write_tool = WriteTool()
-            edit_tool  = EditTool()
+            bash_tool   = BashTool(cwd=Path.cwd())
+            read_tool   = ReadTool()
+            write_tool  = WriteTool()
+            edit_tool   = EditTool()
+            medit_tool  = MultiEditTool()
 
         all_tools = [
             bash_tool,
             read_tool,
             write_tool,
             edit_tool,
+            medit_tool,
             WebFetchTool(),
             WebSearchTool(),
             GrepTool(sandbox=self._sandbox),
@@ -295,6 +323,11 @@ class AgentLoop:
         settings = self._config.settings
         if settings.auto_memory:
             system_text += AUTO_MEMORY_HINT
+
+        # Git status snapshot — helps the agent orient without an explicit Bash call
+        git_info = _git_status_snippet()
+        if git_info:
+            system_text += f"\n\n## Git status\n```\n{git_info}\n```"
 
         # Project-specific extra instructions from .agentic/prompt.md
         extra_prompt_path = Path.cwd() / ".agentic" / "prompt.md"
@@ -417,9 +450,6 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             self._conversation.add_user(combined)
         else:
             self._conversation.add_user(user_message)
-
-        if self._renderer:
-            self._renderer.print_user(user_message)
 
         # Summarize context if needed
         if self._context_mgr.should_summarize():
@@ -556,23 +586,25 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
         assistant_text = ""
         if self._renderer and not self._is_subagent:
             self._renderer.print_assistant_start()
-        async for event in self._llm.stream_message(
-            messages=self._conversation.messages,
-            system=system,
-            tools=None,
-            max_tokens=settings.max_tokens,
-        ):
-            if isinstance(event, TextDelta):
-                assistant_text += event.text
-                if self._renderer and not self._is_subagent:
-                    self._renderer.stream_text(event.text)
-            elif isinstance(event, UsageInfo):
-                self._context_mgr.update_usage(
-                    event.input_tokens, event.output_tokens,
-                    event.cache_read, event.cache_write,
-                )
-        if self._renderer and not self._is_subagent:
-            self._renderer.finish_streaming()
+        try:
+            async for event in self._llm.stream_message(
+                messages=self._conversation.messages,
+                system=system,
+                tools=None,
+                max_tokens=settings.max_tokens,
+            ):
+                if isinstance(event, TextDelta):
+                    assistant_text += event.text
+                    if self._renderer and not self._is_subagent:
+                        self._renderer.stream_text(event.text)
+                elif isinstance(event, UsageInfo):
+                    self._context_mgr.update_usage(
+                        event.input_tokens, event.output_tokens,
+                        event.cache_read, event.cache_write,
+                    )
+        finally:
+            if self._renderer and not self._is_subagent:
+                self._renderer.finish_streaming()
         self._conversation.add_assistant(assistant_text)
         return assistant_text
 
@@ -600,15 +632,15 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                 elapsed = time.monotonic() - t0
                 if spinner is not None:
                     self._renderer.stop_spinner(spinner)
-            await self._hook_mgr.fire(
+            hook_outputs = await self._hook_mgr.fire(
                 HookEvent.POST_TOOL_CALL,
                 {"tool_name": tc["name"], "tool_input": tc["input"], "tool_result": result.content},
             )
-            return tc, result, elapsed
+            return tc, result, elapsed, hook_outputs
 
         results = await asyncio.gather(*[_run(tc) for tc in tool_calls])
 
-        for tc, result, elapsed in results:
+        for tc, result, elapsed, hook_outputs in results:
             if self._renderer and not self._is_subagent:
                 self._renderer.print_tool_result(tc["name"], result.content, result.is_error, elapsed)
 
@@ -622,7 +654,12 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
                     [{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}}],
                 )
             else:
-                self._conversation.add_tool_result(tc["id"], result.content, result.is_error)
+                # Append any PostToolCall hook outputs to the result so the model sees them
+                combined = result.content
+                if hook_outputs:
+                    hook_text = "\n".join(hook_outputs)
+                    combined = f"{combined}\n\n[hook output]\n{hook_text}" if combined else hook_text
+                self._conversation.add_tool_result(tc["id"], combined, result.is_error)
 
     async def _finalize_tool_call(
         self,
@@ -638,13 +675,14 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
         tool["input"] = tool_input
         tool_calls.append(tool)
 
-    # Patterns for auto-detection: absolute/relative/home paths and http(s) URLs
+    # Patterns for auto-detection: absolute/relative/home paths and http(s) URLs.
+    # Negative lookbehind/ahead for backtick prevents matching inside `code spans`.
     _FILE_RE = re.compile(
-        r'(?<![`\w])'           # not inside a word or code span
-        r'((?:~|\.{1,2})?/[\w./\-]+)'  # path starting with ~, ./, ../, or /
-        r'(?![`\w])'
+        r'(?<![`\w/])'                   # not preceded by backtick, word char, or slash
+        r'((?:~|\.{1,2})?/[\w./\-]+)'   # path starting with ~/, ./, ../, or /
+        r'(?![`\w/])'                    # not followed by backtick, word char, or slash
     )
-    _URL_RE = re.compile(r'https?://[^\s<>"\']+')
+    _URL_RE = re.compile(r'https?://[^\s<>"\'`]+')
 
     async def _collect_attachments(self, message: str) -> list[str]:
         """Pre-read file paths and fetch URLs mentioned in the user's message."""
@@ -661,10 +699,11 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
             self._attached.add(key)
             if path.is_file():
                 try:
-                    text = path.read_text(encoding="utf-8", errors="replace")
-                    # Truncate large files to avoid flooding the context
+                    text = await asyncio.to_thread(
+                        path.read_text, encoding="utf-8", errors="replace"
+                    )
                     if len(text) > 20_000:
-                        text = text[:20_000] + f"\n[...truncated at 20 000 chars]"
+                        text = text[:20_000] + "\n[...truncated at 20 000 chars]"
                     attachments.append(f"<file path=\"{raw}\">\n{text}\n</file>")
                     if self._renderer and not self._is_subagent:
                         self._renderer.print_system(f"Attached file: {raw}")

@@ -23,8 +23,17 @@ class ConversationHistory:
     def add_assistant(self, content: str | list[dict[str, Any]]) -> None:
         self._messages.append({"role": "assistant", "content": content})
 
-    def add_tool_result(self, tool_use_id: str, result: str, is_error: bool = False) -> None:
-        """Append tool result as a user message with tool_result content block."""
+    def add_tool_result(
+        self,
+        tool_use_id: str,
+        result: str | list[dict[str, Any]],
+        is_error: bool = False,
+    ) -> None:
+        """Append tool result as a user message with tool_result content block.
+
+        `result` may be a plain string or a list of content blocks (e.g. image
+        vision blocks returned by ReadTool for image files).
+        """
         tool_result: dict[str, Any] = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,

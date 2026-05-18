@@ -183,7 +183,8 @@ class DockerSandbox:
             combined += f"\n--- stderr ---\n{stderr}" if stdout.strip() else stderr
 
         if len(combined) > MAX_OUTPUT_CHARS:
-            combined = combined[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+            omitted = len(combined) - MAX_OUTPUT_CHARS
+            combined = f"[...{omitted:,} chars omitted from start...]\n" + combined[-MAX_OUTPUT_CHARS:]
 
         return combined, proc.returncode or 0
 

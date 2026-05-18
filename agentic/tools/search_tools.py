@@ -209,20 +209,24 @@ class LSTool(Tool):
             return ToolResult.error(f"Permission denied: {path}")
 
         lines = []
+        total = 0
         for entry in entries:
+            total += 1
             if not show_hidden and entry.name.startswith("."):
                 continue
             try:
                 stat = entry.stat()
-                size = stat.st_size
-                size_str = _human_size(size) if entry.is_file() else ""
+                size_str = _human_size(stat.st_size) if entry.is_file() else ""
                 kind = "/" if entry.is_dir() else ("*" if os.access(entry, os.X_OK) else " ")
                 lines.append(f"{kind} {entry.name:<40} {size_str}")
             except Exception:
                 lines.append(f"  {entry.name}")
 
             if len(lines) >= MAX_LS_ENTRIES:
-                lines.append(f"... ({len(list(target.iterdir())) - MAX_LS_ENTRIES} more entries)")
+                # Count remaining without re-iterating
+                remaining = sum(1 for _ in entries)  # consume the rest of the iterator
+                if remaining:
+                    lines.append(f"... ({remaining} more entries)")
                 break
 
         if not lines:

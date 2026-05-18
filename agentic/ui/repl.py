@@ -27,8 +27,16 @@ PROMPT_STYLE = Style.from_dict({
 
 
 def _get_prompt_tokens(model: str, plan_mode: bool) -> FormattedText:
+    short = model.split("/")[-1]          # strip org prefix if present
+    # Abbreviate common long model names so the prompt stays compact
+    short = (short
+             .replace("claude-", "")
+             .replace("sonnet-", "s")
+             .replace("opus-", "o")
+             .replace("haiku-", "h"))
     mode = " [PLAN]" if plan_mode else ""
     return FormattedText([
+        ("class:model-info", f"({short})"),
         ("class:prompt", f"❯{mode} "),
     ])
 
@@ -153,7 +161,30 @@ class REPL:
 
         if text == "/memory":
             index = self._agent._memory.load_index()
-            self._renderer.print_system(index or "No memories yet.")
+            if index:
+                self._renderer.print_markdown(index)
+            else:
+                self._renderer.print_system("No memories yet.")
+            return
+
+        if text == "/history":
+            msgs = self._agent._conversation.messages
+            if not msgs:
+                self._renderer.print_system("No conversation history.")
+            else:
+                lines = []
+                for m in msgs:
+                    role = m["role"].upper()
+                    content = m.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = [
+                            b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        content = " ".join(text_parts)
+                    preview = str(content)[:120].replace("\n", " ")
+                    lines.append(f"[dim]{role}:[/dim] {preview}")
+                self._renderer.console.print("\n".join(lines))
             return
 
         if text.startswith("/memory search "):
