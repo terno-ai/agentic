@@ -192,9 +192,31 @@ class REPL:
             results = self._agent._memory.search(query)
             if results:
                 for r in results:
-                    self._renderer.print_system(f"[{r.memory_type.value}] {r.name}: {r.description}")
+                    age = f" ({r.age_days():.0f}d ago)" if r.age_days() > 1 else ""
+                    self._renderer.print_system(
+                        f"[{r.memory_type.value}] {r.name}{age}: {r.description}"
+                    )
             else:
                 self._renderer.print_system("No matching memories.")
+            return
+
+        if text.startswith("/memory delete "):
+            name = text.removeprefix("/memory delete ").strip()
+            if self._agent._memory.delete(name):
+                self._renderer.print_system(f"Deleted memory: {name}")
+            else:
+                self._renderer.print_system(f"Memory not found: {name}")
+            return
+
+        if text.startswith("/memory stale"):
+            stale = self._agent._memory.stale_project_memories(threshold_days=30)
+            if stale:
+                lines = [f"Stale project memories (not updated in 30+ days):"]
+                for r in stale:
+                    lines.append(f"  {r.name} ({r.age_days():.0f}d) — {r.description}")
+                self._renderer.print_system("\n".join(lines))
+            else:
+                self._renderer.print_system("No stale project memories.")
             return
 
         if text == "/skills":
@@ -272,18 +294,40 @@ class REPL:
         if text.startswith("/btw "):
             note = text.removeprefix("/btw ").strip()
             if not note:
-                self._renderer.print_system("Usage: /btw <note>")
+                self._renderer.print_system(
+                    "Usage: /btw <note>\n"
+                    "       /btw [feedback] always use ruff before committing\n"
+                    "       /btw [project] entry point is main.py\n"
+                    "       /btw [reference] docs at https://...\n"
+                    "Type prefix is optional — defaults to 'user'."
+                )
                 return
             from agentic.memory.types import MemoryType
             import re, datetime
+
+            # Parse optional [type] prefix: /btw [project] note text here
+            mem_type = MemoryType.USER
+            type_match = re.match(r"^\[(\w+)\]\s*", note)
+            if type_match:
+                type_str = type_match.group(1).lower()
+                try:
+                    mem_type = MemoryType(type_str)
+                    note = note[type_match.end():]
+                except ValueError:
+                    pass  # unknown type prefix — treat as part of the note
+
+            if not note:
+                self._renderer.print_system("Note text is empty after type prefix.")
+                return
+
             slug = "btw_" + re.sub(r"[^a-z0-9]", "_", note[:40].lower()).strip("_")
-            self._agent._memory.create(
+            self._agent._memory.upsert(
                 name=slug,
                 description=note[:120],
-                memory_type=MemoryType.USER,
+                memory_type=mem_type,
                 body=f"{note}\n\n*(saved via /btw on {datetime.date.today()})*",
             )
-            self._renderer.print_system(f"Noted: {note}")
+            self._renderer.print_memory_saved(slug, mem_type.value)
             return
 
         # /! shell shortcut

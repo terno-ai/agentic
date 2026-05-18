@@ -189,13 +189,15 @@ class Renderer:
 - `/help` — show this help
 - `/skills` — list available skills
 - `/memory` — show memory index
-- `/memory search <query>` — search memories
+- `/memory search <query>` — search memories (relevance-ranked)
+- `/memory delete <name>` — delete a memory
+- `/memory stale` — list project memories not updated in 30+ days
 - `/history` — show condensed conversation transcript
 - `/config` — show current settings
 - `/model <name>` — switch model (e.g. gpt-4o, claude-opus-4-7)
 - `/provider <anthropic|openai>` — switch provider
 - `/plan` — toggle plan mode (read-only)
-- `/btw <note>` — save a note to memory instantly (no LLM call)
+- `/btw <note>` — save a note to memory; prefix `[type]` to set type, e.g. `/btw [project] uses postgres`
 - `/think [N|off]` — enable extended thinking with budget N tokens (Claude 3.7+ only)
 - `/compact` — manually compress conversation context
 - `/clear` — clear conversation history

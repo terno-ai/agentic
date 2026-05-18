@@ -91,13 +91,28 @@ Example flow for "build a todo app":
 - Trust framework guarantees; only validate at system boundaries.
 
 ## Memory system
-You have access to persistent memory via the `MemoryWrite` tool. Call it proactively when you learn something worth remembering across sessions:
-- User's role, preferences, or expertise → type='user'
-- Behavioral corrections or confirmed approaches → type='feedback'
-- Ongoing work, goals, or deadlines → type='project'
-- External resources or references → type='reference'
 
-Use a short kebab-case `name`, a one-line `description`, and a `body` that leads with the fact/rule then **Why:** and **How to apply:** lines for feedback/project types.
+You have persistent memory via `MemoryWrite`, `MemoryRead`, and `MemoryDelete` tools.
+
+**When to save** (call `MemoryWrite` proactively — don't wait to be asked):
+- User preferences, expertise, working style → type=`user`
+- Corrections you received or approaches that were confirmed → type=`feedback`
+- Project facts: platform, language, framework, entry point, constraints → type=`project`
+- External systems, docs, APIs the user references → type=`reference`
+
+**How to write good memories:**
+- `name`: short kebab-case slug, e.g. `user-prefers-tabs`, `project-entry-point`
+- `description`: one line that tells a future session whether this memory is relevant
+- `body` for feedback: rule first, then **Why:** (the reason given) and **How to apply:**
+- `body` for project: platform, language, entry point, key files, constraints
+
+**When to update/delete:**
+- Re-save with the same `name` to update (upsert semantics)
+- Call `MemoryRead` first if you need to see what's already saved
+- Call `MemoryDelete` when a memory is stale or wrong — don't let bad facts persist
+
+**Project facts must be saved immediately** when learned — they prevent wrong assumptions
+(e.g. searching for `main.py` in a browser-only JavaScript game).
 
 ## Working directory
 <<CWD>>
@@ -105,8 +120,8 @@ Use a short kebab-case `name`, a one-line `description`, and a `body` that leads
 ## Loaded context
 <<AGENT_MD>>
 
-## Memory index
-<<MEMORY_INDEX>>
+## Memories
+<<MEMORIES>>
 """
 
 def _git_status_snippet() -> str:
@@ -133,24 +148,6 @@ def _git_status_snippet() -> str:
         return ""
 
 
-AUTO_MEMORY_HINT = """
-## When to save memories
-
-Save a memory whenever you learn something that should survive context summarization:
-
-- **Project facts** (save IMMEDIATELY when learned, as `project` type):
-  - Platform / target environment: "this is a browser game, no server"
-  - Language and framework: "JavaScript + Canvas API, no build step"
-  - Entry point and key files: "index.html is the entry point, game.js has the logic"
-  - Constraints: "user wants no external libraries"
-
-- **User preferences** (save as `user` type): working style, expertise level, tool preferences.
-
-- **Feedback** (save as `feedback` type): when corrected or when an approach is confirmed.
-
-Saving project facts early prevents the agent from making wrong assumptions later
-(e.g., searching for main.py in a JavaScript project, or adding a server to a browser-only app).
-"""
 
 
 class AgentLoop:
@@ -229,7 +226,7 @@ class AgentLoop:
         self._context_mgr._task_store = task_store
         from agentic.tools.agent_tool import AgentTool
         from agentic.tools.notification import AskUserQuestionTool, PushNotificationTool
-        from agentic.memory.tool import MemoryWriteTool
+        from agentic.memory.tool import MemoryWriteTool, MemoryReadTool, MemoryDeleteTool
 
         if self._sandbox is not None:
             workspace = self._sandbox._workspace
@@ -266,6 +263,8 @@ class AgentLoop:
             AskUserQuestionTool(ask_fn=self._ask_user if not self._is_subagent else None),
             PushNotificationTool(),
             MemoryWriteTool(self._memory),
+            MemoryReadTool(self._memory),
+            MemoryDeleteTool(self._memory),
         ]
 
         if self._kernel is not None:
@@ -311,18 +310,16 @@ class AgentLoop:
             else "(No AGENT.md found. Run /init to create one.)"
         )
 
-        memory_index = self._memory.load_index()
+        memories_text = self._memory.load_for_context()
 
         system_text = (
             SYSTEM_PROMPT_BASE
             .replace("<<CWD>>", cwd)
             .replace("<<AGENT_MD>>", agent_md)
-            .replace("<<MEMORY_INDEX>>", memory_index or "(no memories yet)")
+            .replace("<<MEMORIES>>", memories_text or "(no memories yet — save facts with MemoryWrite)")
         )
 
         settings = self._config.settings
-        if settings.auto_memory:
-            system_text += AUTO_MEMORY_HINT
 
         # Git status snapshot — helps the agent orient without an explicit Bash call
         git_info = _git_status_snippet()
@@ -426,6 +423,17 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
     async def run_turn(self, user_message: str) -> str:
         """Process one user turn through the full agent loop."""
         settings = self._config.settings
+
+        # On the very first turn, warn about stale project memories
+        if self._iteration_count == 0 and self._renderer and not self._is_subagent:
+            stale = self._memory.stale_project_memories(threshold_days=30)
+            if stale:
+                names = ", ".join(r.name for r in stale[:3])
+                self._renderer.print_system(
+                    f"⚠  {len(stale)} project memory/memories not updated in 30+ days "
+                    f"({names}{'…' if len(stale) > 3 else ''}). "
+                    "Use /memory stale to review or /memory delete <name> to remove."
+                )
 
         # Check for skill invocation
         parsed = SkillRunner.parse_slash_command(user_message)
@@ -643,6 +651,14 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
         for tc, result, elapsed, hook_outputs in results:
             if self._renderer and not self._is_subagent:
                 self._renderer.print_tool_result(tc["name"], result.content, result.is_error, elapsed)
+                # Special notification for memory operations
+                if tc["name"] == "MemoryWrite" and not result.is_error:
+                    self._renderer.print_memory_saved(
+                        result.metadata.get("memory_name", tc["input"].get("name", "")),
+                        result.metadata.get("memory_type", tc["input"].get("type", "")),
+                    )
+                elif tc["name"] == "MemoryDelete" and not result.is_error:
+                    self._renderer.print_system(f"🗑  Memory deleted: {tc['input'].get('name', '')}")
 
             # Images returned by ReadTool are passed as vision content blocks
             if result.metadata.get("image") and not result.is_error:
