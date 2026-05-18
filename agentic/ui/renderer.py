@@ -138,6 +138,7 @@ class Renderer:
 - `/model <name>` — switch model (e.g. gpt-4o, claude-opus-4-7)
 - `/provider <anthropic|openai>` — switch provider
 - `/plan` — toggle plan mode (read-only)
+- `/btw <note>` — save a note to memory instantly (no LLM call)
 - `/clear` — clear conversation history
 - `/exit` or `Ctrl+D` — exit
 

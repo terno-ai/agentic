@@ -173,9 +173,12 @@ class AgentLoop:
             project_dir=Path.cwd(),
             extra_dirs=settings.skills_dirs,
         )
+        # Inside a sandbox the container provides the isolation boundary, so
+        # interactive permission prompts are unnecessary — auto-allow everything.
+        needs_prompt = not is_subagent and sandbox is None
         self._permission_mgr = PermissionManager(
             config=settings.permissions,
-            prompt_fn=self._permission_prompt if not is_subagent else None,
+            prompt_fn=self._permission_prompt if needs_prompt else None,
         )
         self._hook_mgr = HookManager(
             {k: v for k, v in settings.hooks.items()}

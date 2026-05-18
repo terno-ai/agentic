@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 BUILTIN_COMMANDS = [
     "/help", "/skills", "/memory", "/config", "/model",
-    "/plan", "/clear", "/exit", "/!",
+    "/plan", "/clear", "/exit", "/!", "/btw",
 ]
 
 

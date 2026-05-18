@@ -181,6 +181,23 @@ class REPL:
             self._renderer.print_system(f"Plan mode: {'ON' if not current else 'OFF'}")
             return
 
+        if text.startswith("/btw "):
+            note = text.removeprefix("/btw ").strip()
+            if not note:
+                self._renderer.print_system("Usage: /btw <note>")
+                return
+            from agentic.memory.types import MemoryType
+            import re, datetime
+            slug = "btw_" + re.sub(r"[^a-z0-9]", "_", note[:40].lower()).strip("_")
+            self._agent._memory.create(
+                name=slug,
+                description=note[:120],
+                memory_type=MemoryType.USER,
+                body=f"{note}\n\n*(saved via /btw on {datetime.date.today()})*",
+            )
+            self._renderer.print_system(f"Noted: {note}")
+            return
+
         # /! shell shortcut
         if text.startswith("/! ") or text.startswith("!"):
             cmd = text.removeprefix("/! ").removeprefix("!")
