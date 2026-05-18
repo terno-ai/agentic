@@ -22,6 +22,15 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 - **Extended thinking** — `/think [N|off]` enables Claude's extended thinking mode (Claude 3.7+); thinking shown inline as dimmed `[thinking]…[/thinking]` blocks
 - **File/URL auto-detection** — file paths and URLs mentioned in a message are pre-read/fetched and attached as context before the LLM turn — no extra tool call needed
 - **Multi-line input** — `Esc+Enter` inserts a newline; `Enter` submits
+- **LS tool** — structured directory listing (sandbox-aware); replaces `Bash(ls)`
+- **Image reading** — `Read` detects PNG/JPG/GIF/WEBP and passes them as vision content blocks to the model
+- **Sensitive file warnings** — `Read` warns before opening `.env`, `id_rsa`, `credentials.json`, etc.
+- **Session cost estimate** — cumulative `~$N.NNNN` displayed alongside token counts after each turn
+- **Tool spinner + timing** — animated spinner while a tool runs; elapsed time shown on completion
+- **MemoryWrite tool** — model saves memories via a direct tool call; no fragile XML tag parsing
+- **`/compact`** — manually trigger context compression mid-session
+- **`.agentic/prompt.md`** — drop project-specific instructions here; loaded into every session automatically
+- **Max-iteration recovery** — when the tool loop limit is hit, one final LLM turn summarises progress instead of stopping silently
 - **Planning + task tracking** — agent creates a task list before non-trivial work and marks each step in_progress / completed live
 - **Permissions** — glob-based allow/deny rules; auto-bypassed inside the sandbox (container is the boundary)
 - **Hooks** — shell commands triggered on agent events (PreToolCall, PostToolCall, AgentStart, …)
@@ -123,6 +132,7 @@ agentic config model claude-sonnet-4-6 --global
 | `/memory search <query>` | Search memories |
 | `/btw <note>` | Save a note to memory instantly — no LLM call |
 | `/think [N\|off]` | Enable extended thinking with N token budget (Claude 3.7+ only) |
+| `/compact` | Manually compress conversation context |
 | `/plan` | Toggle plan mode (read-only, no edits) |
 | `/clear` | Clear conversation history |
 | `/! <cmd>` or `!<cmd>` | Run a shell command directly |
@@ -427,11 +437,24 @@ python -m swebench.harness.run_evaluation \
 
 ## Project Structure
 
+### Project-specific instructions
+
+Create `.agentic/prompt.md` in your project root to inject extra instructions into every session:
+
+```markdown
+# My project rules
+- Always use `ruff` to lint after editing Python files
+- Prefer `httpx` over `requests`
+- Tests live in `tests/` and use pytest
+```
+
+The file is loaded automatically — no config change needed.
+
 ```
 agentic/
 ├── core/          # Agent loop, LLM clients (Anthropic + OpenAI), context, config
-├── tools/         # Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Task*, Agent
-├── memory/        # Persistent memory with MEMORY.md index
+├── tools/         # Read, Write, Edit, Bash, Grep, Glob, LS, WebFetch, WebSearch, Task*, Agent
+├── memory/        # Persistent memory with MEMORY.md index + MemoryWrite tool
 ├── skills/        # Slash-command skills (YAML) + built-ins
 ├── kernel/        # Persistent Python kernel (worker, manager, tool, config)
 ├── mcp/           # MCP stdio client + tool bridge
@@ -466,15 +489,17 @@ ruff check agentic/     # lint
 
 | Tool | Description |
 |---|---|
-| `Read` | Read a file with line numbers; binary-safe; tail-truncates large files |
+| `Read` | Read a file with line numbers; detects images (vision) and binary; warns on secrets |
 | `Write` | Create or overwrite a file |
 | `Edit` | Replace a string in a file; whitespace-tolerant; shows coloured diff |
 | `Bash` | Persistent shell — cwd, env, and functions survive between calls |
-| `Grep` | Regex search across files (ripgrep if available, else grep) |
-| `Glob` | List files matching a pattern (e.g. `**/*.py`) |
+| `Grep` | Regex search across files (ripgrep-backed; sandbox-aware) |
+| `Glob` | List files matching a pattern, e.g. `**/*.py` (sandbox-aware) |
+| `LS` | Structured directory listing with sizes and types (sandbox-aware) |
 | `WebFetch` | Fetch a URL and return readable text |
 | `WebSearch` | DuckDuckGo search, no API key required |
-| `TaskCreate/Update/List` | Track in-session TODO items |
+| `MemoryWrite` | Save a persistent memory entry directly (user/feedback/project/reference) |
+| `TaskCreate/Update/List` | Track in-session TODO items; scoped per agent instance |
 | `Agent` | Spawn a sub-agent; background tasks return a `task_id` you can poll |
 | `PythonKernel` | Persistent Python interpreter (requires `--kernel`) |
 | `AskUserQuestion` | Prompt the user for input mid-task |
