@@ -33,6 +33,10 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 - **Max-iteration recovery** — when the tool loop limit is hit, one final LLM turn summarises progress instead of stopping silently
 - **Planning + task tracking** — agent creates a task list before non-trivial work and marks each step in_progress / completed live
 - **Permissions** — glob-based allow/deny rules; auto-bypassed inside the sandbox (container is the boundary)
+- **MultiEdit tool** — apply multiple find-and-replace edits to one file atomically in a single call
+- **Git awareness** — current branch and dirty-file status injected into the system prompt every turn
+- **Hook output feedback** — `PostToolCall` hook stdout is injected back into the conversation (enables linters/formatters as hooks)
+- **Task-list preservation** — active tasks are included in context summarization so the TODO list survives compaction
 - **Hooks** — shell commands triggered on agent events (PreToolCall, PostToolCall, AgentStart, …)
 - **Scheduling** — cron / interval autonomous agent runs via APScheduler
 - **Sub-agents** — spawn specialized child agents for focused subtasks
@@ -128,8 +132,9 @@ agentic config model claude-sonnet-4-6 --global
 | `/skills` | List available skills |
 | `/model <name>` | Switch model (e.g. `gpt-4o`, `claude-opus-4-7`, `o4-mini`) |
 | `/provider <anthropic\|openai>` | Switch provider |
-| `/memory` | Show memory index |
+| `/memory` | Show memory index (rendered as markdown) |
 | `/memory search <query>` | Search memories |
+| `/history` | Show condensed conversation transcript |
 | `/btw <note>` | Save a note to memory instantly — no LLM call |
 | `/think [N\|off]` | Enable extended thinking with N token budget (Claude 3.7+ only) |
 | `/compact` | Manually compress conversation context |
@@ -139,6 +144,8 @@ agentic config model claude-sonnet-4-6 --global
 | `/exit` or Ctrl+D | Exit |
 
 **Ctrl+C** during an agent turn interrupts and cancels the current response immediately.
+
+The REPL prompt shows the active model name (e.g. `(s4-6)❯`) so you always know which model is running.
 
 **Multi-line input** — `Esc+Enter` (or `Alt+Enter`) inserts a newline; `Enter` submits.
 
@@ -492,6 +499,7 @@ ruff check agentic/     # lint
 | `Read` | Read a file with line numbers; detects images (vision) and binary; warns on secrets |
 | `Write` | Create or overwrite a file |
 | `Edit` | Replace a string in a file; whitespace-tolerant; shows coloured diff |
+| `MultiEdit` | Apply N edits to one file atomically — all succeed or none apply |
 | `Bash` | Persistent shell — cwd, env, and functions survive between calls |
 | `Grep` | Regex search across files (ripgrep-backed; sandbox-aware) |
 | `Glob` | List files matching a pattern, e.g. `**/*.py` (sandbox-aware) |
