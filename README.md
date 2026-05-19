@@ -4,7 +4,7 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 
 ## Features
 
-- **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including reasoning models o1/o3/o4-mini), switchable mid-session
+- **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including gpt-5, gpt-5.5, reasoning models o1/o3/o4-mini), switchable mid-session
 - **Persistent bash shell** — `cd`, env vars, and shell state survive between tool calls; no fresh subprocess per command
 - **Parallel tool execution** — independent tool calls in one LLM turn run concurrently via `asyncio.gather`
 - **Grep + Glob tools** — structured file search (ripgrep-backed) and pattern-based file listing, separate from raw bash
@@ -74,6 +74,8 @@ agentic
 
 # OpenAI — provider auto-detected from model name
 agentic --model gpt-4o-mini          # → OpenAI
+agentic --model gpt-5                # → OpenAI
+agentic --model gpt-5.5              # → OpenAI
 agentic --model o4-mini              # → OpenAI (reasoning model)
 agentic --model claude-opus-4-7      # → Anthropic
 
