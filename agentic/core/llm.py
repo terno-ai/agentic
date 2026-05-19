@@ -392,7 +392,8 @@ class OpenAIClient:
         last_exc: BaseException | None = None
         for attempt in range(_MAX_RETRIES + 1):
             started = False
-            tool_state: dict[int, dict[str, str]] = {}  # index → {id, name}
+            tool_state: dict[int, dict[str, str]] = {}   # index → {id, name}
+            arg_buf: dict[int, list[str]] = {}            # args buffered before id arrives
             try:
                 stream = await self._async_client.chat.completions.create(**kwargs)
                 async for chunk in stream:
@@ -417,11 +418,22 @@ class OpenAIClient:
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index
                             if tc_delta.id:
-                                tool_state[idx] = {"id": tc_delta.id, "name": tc_delta.function.name or ""}
-                                yield ToolUseStart(tc_delta.id, tc_delta.function.name or "")
-                            if tc_delta.function and tc_delta.function.arguments:
-                                tool_id = tool_state[idx]["id"]
-                                yield ToolInputDelta(tool_id, tc_delta.function.arguments)
+                                tool_state[idx] = {
+                                    "id": tc_delta.id,
+                                    "name": (tc_delta.function.name or "") if tc_delta.function else "",
+                                }
+                                yield ToolUseStart(tc_delta.id, tool_state[idx]["name"])
+                                # Flush any arguments that arrived before the id
+                                for buffered in arg_buf.pop(idx, []):
+                                    yield ToolInputDelta(tc_delta.id, buffered)
+                            # Collect argument fragments (use `is not None` to keep empty strings)
+                            if tc_delta.function and tc_delta.function.arguments is not None:
+                                args = tc_delta.function.arguments
+                                if idx in tool_state:
+                                    yield ToolInputDelta(tool_state[idx]["id"], args)
+                                else:
+                                    # id not yet seen — buffer until it arrives
+                                    arg_buf.setdefault(idx, []).append(args)
 
                 yield MessageComplete(None)
                 return  # success
