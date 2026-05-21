@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import random
 from pathlib import Path
 from typing import Any
@@ -191,3 +192,101 @@ class BashTool(Tool):
         if self._shell:
             await self._shell.terminate()
             self._shell = None
+
+
+class MonitorTool(Tool):
+    """Watch a command's output line by line; stop on pattern match, line limit, or timeout."""
+
+    name = "Monitor"
+    description = (
+        "Run a command and watch its output line by line as an event stream. "
+        "Stops when: (1) trigger_pattern matches a line — returns immediately with that match; "
+        "(2) lines_limit is reached; (3) timeout expires; or (4) the process exits. "
+        "Useful for: waiting until a server prints 'ready', following test output for "
+        "pass/fail, or tailing a log file until a condition appears."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Shell command to run and watch",
+            },
+            "trigger_pattern": {
+                "type": "string",
+                "description": "Regex — stop immediately when any output line matches",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Max milliseconds to wait (default 30000, max 300000)",
+            },
+            "lines_limit": {
+                "type": "integer",
+                "description": "Stop after this many lines (default 500)",
+            },
+        },
+        "required": ["command"],
+    }
+
+    def __init__(self, cwd: Path | None = None) -> None:
+        self._cwd = str(cwd or Path.cwd())
+
+    async def execute(
+        self,
+        command: str,
+        trigger_pattern: str | None = None,
+        timeout: int | None = None,
+        lines_limit: int = 500,
+    ) -> ToolResult:
+        timeout_s = min((timeout or 30_000), 300_000) / 1000
+        pattern = re.compile(trigger_pattern) if trigger_pattern else None
+        lines: list[str] = []
+        stop_reason = "process exited"
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=self._cwd,
+                env={**os.environ},
+            )
+
+            async def _collect() -> None:
+                nonlocal stop_reason
+                assert proc.stdout
+                async for raw in proc.stdout:
+                    line = raw.decode(errors="replace").rstrip("\n")
+                    lines.append(line)
+                    if pattern and pattern.search(line):
+                        stop_reason = f"trigger matched: {line!r}"
+                        try:
+                            proc.kill()
+                        except ProcessLookupError:
+                            pass
+                        return
+                    if len(lines) >= lines_limit:
+                        stop_reason = f"lines_limit ({lines_limit}) reached"
+                        try:
+                            proc.kill()
+                        except ProcessLookupError:
+                            pass
+                        return
+
+            try:
+                await asyncio.wait_for(_collect(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                stop_reason = f"timeout ({timeout_s:.0f}s)"
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+
+            await proc.wait()
+
+        except Exception as e:
+            return ToolResult.error(f"Monitor error: {e}")
+
+        output = "\n".join(lines)
+        output = _tail_truncate(output, MAX_OUTPUT_CHARS)
+        return ToolResult.ok(f"[stopped: {stop_reason}]\n{output}")

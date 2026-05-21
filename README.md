@@ -34,6 +34,7 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 - **Planning + task tracking** — agent creates a task list before non-trivial work and marks each step in_progress / completed live
 - **Permissions** — glob-based allow/deny rules; auto-bypassed inside the sandbox (container is the boundary)
 - **MultiEdit tool** — apply multiple find-and-replace edits to one file atomically in a single call
+- **Monitor tool** — watch a command's output line by line; stops on a regex trigger pattern, line limit, timeout, or process exit — useful for waiting until a server is ready or following test output
 - **Git awareness** — current branch and dirty-file status injected into the system prompt every turn
 - **Hook output feedback** — `PostToolCall` hook stdout is injected back into the conversation (enables linters/formatters as hooks)
 - **Task-list preservation** — active tasks are included in context summarization so the TODO list survives compaction
@@ -479,7 +480,7 @@ The file is loaded automatically — no config change needed.
 ```
 agentic/
 ├── core/          # Agent loop, LLM clients (Anthropic + OpenAI), context, config
-├── tools/         # Read, Write, Edit, Bash, Grep, Glob, LS, WebFetch, WebSearch, Task*, Agent
+├── tools/         # Read, Write, Edit, Bash, Monitor, Grep, Glob, LS, WebFetch, WebSearch, Task*, Agent
 ├── memory/        # Persistent memory with MEMORY.md index + MemoryWrite tool
 ├── skills/        # Slash-command skills (YAML) + built-ins
 ├── kernel/        # Persistent Python kernel (worker, manager, tool, config)
@@ -520,6 +521,7 @@ ruff check agentic/     # lint
 | `Edit` | Replace a string in a file; whitespace-tolerant; shows coloured diff |
 | `MultiEdit` | Apply N edits to one file atomically — all succeed or none apply |
 | `Bash` | Persistent shell — cwd, env, and functions survive between calls |
+| `Monitor` | Run a command and watch its output line by line; stop on `trigger_pattern` regex, `lines_limit`, timeout, or process exit |
 | `Grep` | Regex search across files (ripgrep-backed; sandbox-aware) |
 | `Glob` | List files matching a pattern, e.g. `**/*.py` (sandbox-aware) |
 | `LS` | Structured directory listing with sizes and types (sandbox-aware) |

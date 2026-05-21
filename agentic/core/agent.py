@@ -209,7 +209,7 @@ class AgentLoop:
         self._setup_tools()
 
     def _setup_tools(self) -> None:
-        from agentic.tools.bash import BashTool
+        from agentic.tools.bash import BashTool, MonitorTool
         from agentic.tools.file_tools import ReadTool, WriteTool, EditTool, MultiEditTool
         from agentic.sandbox.sandboxed_bash import SandboxedBashTool
         from agentic.sandbox.sandboxed_file_tools import (
@@ -244,6 +244,7 @@ class AgentLoop:
 
         all_tools = [
             bash_tool,
+            MonitorTool(cwd=Path.cwd()),
             read_tool,
             write_tool,
             edit_tool,
