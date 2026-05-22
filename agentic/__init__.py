@@ -24,14 +24,14 @@ See ``agentic.sdk`` for the full SDK API.
 __version__ = "0.2.0"
 
 # Re-export SDK surface at the top level for convenience
-from agentic.sdk import Agent, Session, tool
+from agentic.sdk import Agent, Session, tool, print_events
 from agentic.sdk.events import (
     DoneEvent, ErrorEvent, Event,
     TextEvent, ThinkingEvent, ToolResultEvent, ToolStartEvent,
 )
 
 __all__ = [
-    "Agent", "Session", "tool",
+    "Agent", "Session", "tool", "print_events",
     "Event", "TextEvent", "ThinkingEvent",
-    "ToolStartEvent", "ToolResultEvent", "ErrorEvent", "DoneEvent",
+    "ToolStartEvent", "ToolResultEvent", "ErrorEvent", "DoneEvent", "SystemEvent",
 ]

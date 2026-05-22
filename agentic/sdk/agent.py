@@ -254,6 +254,37 @@ class Session:
         import asyncio
         return asyncio.run(self.run(message))
 
+    def stream_sync(self, message: str, on_event: "Any | None" = None) -> str:
+        """Stream events synchronously, printing each one to stdout.
+
+        By default uses :func:`~agentic.sdk.handlers.print_events`.
+        Pass *on_event* to supply your own handler instead.
+
+        Returns the full accumulated text response.
+
+        Example::
+
+            from agentic import Agent
+            agent = Agent()
+            session = agent.session()
+            session.stream_sync("Build a todo app")   # prints as tokens arrive
+        """
+        import asyncio
+        from agentic.sdk.handlers import print_events as default_handler
+        handler = on_event or default_handler
+
+        async def _run() -> str:
+            full_text = ""
+            async for event in self.stream(message):
+                handler(event)
+                if isinstance(event, TextEvent):
+                    full_text += event.text
+                elif isinstance(event, ErrorEvent):
+                    raise RuntimeError(event.message)
+            return full_text
+
+        return asyncio.run(_run())
+
     @property
     def _inner(self) -> "Any":
         """Direct access to the underlying AgentLoop.
@@ -428,6 +459,22 @@ class Agent:
         """
         import asyncio
         return asyncio.run(self.run(message))
+
+    def stream_sync(self, message: str, on_event: "Any | None" = None) -> str:
+        """Stream events synchronously, printing each one to stdout.
+
+        By default uses :func:`~agentic.sdk.handlers.print_events`.
+        Pass *on_event* to supply your own handler instead.
+
+        Returns the full accumulated text response.
+
+        Example::
+
+            from agentic import Agent
+            agent = Agent(model="gpt-4o")
+            agent.stream_sync("Build a REST API with FastAPI")
+        """
+        return self.session().stream_sync(message, on_event=on_event)
 
     async def stream(self, message: str) -> AsyncIterator[Event]:
         """Send *message* in a fresh session and stream :class:`Event` objects."""

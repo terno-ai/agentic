@@ -26,6 +26,7 @@ Quick start::
 """
 
 from agentic.sdk.agent import Agent, Session
+from agentic.sdk.handlers import print_events
 from agentic.sdk.events import (
     DoneEvent,
     ErrorEvent,
@@ -42,6 +43,7 @@ __all__ = [
     "Agent",
     "Session",
     "tool",
+    "print_events",
     "Event",
     "TextEvent",
     "ThinkingEvent",
