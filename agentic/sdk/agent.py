@@ -66,6 +66,9 @@ class _StreamingRenderer:
     def print_system(self, text: str) -> None:
         self._q.put_nowait(SystemEvent(text=text))
 
+    def print_permission_prompt(self, tool_name: str, call_str: str, tool_input: "Any") -> None:
+        self._q.put_nowait(SystemEvent(text=f"Permission required — {tool_name}: {call_str}"))
+
     def print_error(self, text: str) -> None:
         self._q.put_nowait(ErrorEvent(message=text))
 
