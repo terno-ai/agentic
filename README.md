@@ -6,7 +6,7 @@ Use it as a CLI for interactive coding sessions, or import `agentic.sdk` to embe
 
 ## Features
 
-- **Agent SDK** — embed the agent in any Python application; `Agent`, `Session`, `@tool` decorator, async streaming events, and a FastAPI router out of the box
+- **Agent SDK** — embed the agent in any Python application; `Agent`, `Session`, `@tool` decorator, sync (`run_sync`) and async streaming events, and a FastAPI router out of the box; the CLI REPL itself runs through the same SDK interface
 - **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including gpt-5, gpt-5.5, reasoning models o1/o3/o4-mini), switchable mid-session
 - **Persistent bash shell** — `cd`, env vars, and shell state survive between tool calls; no fresh subprocess per command
 - **Parallel tool execution** — independent tool calls in one LLM turn run concurrently via `asyncio.gather`
@@ -57,7 +57,12 @@ pip install -e ".[fastapi]"       # + FastAPI/uvicorn for web apps
 ```python
 from agentic import Agent, tool
 
-# ── Coding agent (full tool suite) ──────────────────────────────────────────
+# ── Plain script / standard Python REPL (no async needed) ───────────────────
+agent = Agent(model="claude-sonnet-4-6")
+response = agent.run_sync("Build a REST API with FastAPI")
+print(response)
+
+# ── Async function or asyncio script ────────────────────────────────────────
 agent = Agent(model="claude-sonnet-4-6")
 response = await agent.run("Build a REST API with FastAPI")
 
@@ -607,7 +612,8 @@ Agent(
 
 | Method | Description |
 |--------|-------------|
-| `await agent.run(message)` | One-shot response in a fresh session |
+| `agent.run_sync(message)` | One-shot response — works in plain scripts and the standard Python REPL |
+| `await agent.run(message)` | Async one-shot response |
 | `async for event in agent.stream(message)` | Stream events from a fresh session |
 | `session = agent.session()` | Create a stateful multi-turn `Session` |
 | `agent.add_tool(fn_or_tool)` | Register a custom tool (chainable) |
@@ -617,7 +623,8 @@ Agent(
 
 | Method | Description |
 |--------|-------------|
-| `await session.run(message)` | Send a message, return full text |
+| `session.run_sync(message)` | Send a message, return full text — no async needed |
+| `await session.run(message)` | Send a message, return full text (async) |
 | `async for event in session.stream(message)` | Send a message, stream events |
 | `session.reset()` | Clear conversation history |
 | `session.id` | UUID string identifying this session |
@@ -646,8 +653,9 @@ type annotations map to JSON Schema types (`str`, `int`, `float`, `bool`, `list`
 | `ThinkingEvent` | `text: str` |
 | `ToolStartEvent` | `tool_name: str`, `tool_input: dict` |
 | `ToolResultEvent` | `tool_name: str`, `content: str`, `is_error: bool`, `elapsed_seconds: float` |
-| `DoneEvent` | `text: str`, `input_tokens: int`, `output_tokens: int`, `cost_usd: float` |
+| `DoneEvent` | `text: str`, `input_tokens: int`, `output_tokens: int`, `cache_read_tokens: int`, `cache_write_tokens: int`, `cost_usd: float` |
 | `ErrorEvent` | `message: str` |
+| `SystemEvent` | `text: str` — informational messages (context summaries, skill runs, warnings) |
 
 All events expose `.to_dict()` for JSON serialization.
 
