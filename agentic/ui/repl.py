@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
@@ -12,10 +12,6 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
-from agentic.sdk.events import (
-    DoneEvent, ErrorEvent, SystemEvent,
-    TextEvent, ThinkingEvent, ToolResultEvent, ToolStartEvent,
-)
 from agentic.ui.completions import AgentCompleter
 
 if TYPE_CHECKING:
@@ -371,72 +367,15 @@ class REPL:
             self._agent_task = None
 
     # ------------------------------------------------------------------
-    # Agent turn — event-driven rendering
+    # Agent turn — rendered directly via the Rich renderer
     # ------------------------------------------------------------------
 
     async def _run_agent_turn(self, text: str) -> None:
-        """Run one user turn via session.stream() and render each event."""
-        # pending: list of (tool_name, tool_input, spinner) for active parallel tools
-        pending: list[tuple[str, dict[str, Any], Any]] = []
-        needs_header = True   # print "Assistant:" before first text chunk
+        """Run one user turn, rendering directly through the Rich renderer.
 
-        async for event in self._session.stream(text):
-
-            if isinstance(event, TextEvent):
-                if needs_header:
-                    self._renderer.print_assistant_start()
-                    needs_header = False
-                self._renderer.stream_text(event.text)
-
-            elif isinstance(event, ThinkingEvent):
-                if needs_header:
-                    self._renderer.print_assistant_start()
-                    needs_header = False
-                self._renderer.stream_thinking(event.text)
-
-            elif isinstance(event, ToolStartEvent):
-                # Finish any streaming text before tool output
-                if not needs_header:
-                    self._renderer.finish_streaming()
-                    needs_header = True
-                self._renderer.print_tool_call(event.tool_name, event.tool_input)
-                spinner = self._renderer.start_spinner(event.tool_name)
-                pending.append((event.tool_name, event.tool_input, spinner))
-
-            elif isinstance(event, ToolResultEvent):
-                # Find and remove the first matching pending entry
-                for i, (name, inp, spinner) in enumerate(pending):
-                    if name == event.tool_name:
-                        pending.pop(i)
-                        self._renderer.stop_spinner(spinner)
-                        self._renderer.print_tool_result(
-                            event.tool_name, event.content, event.is_error, event.elapsed_seconds
-                        )
-                        if event.tool_name == "MemoryWrite" and not event.is_error:
-                            self._renderer.print_memory_saved(
-                                inp.get("name", ""), inp.get("type", "")
-                            )
-                        elif event.tool_name == "MemoryDelete" and not event.is_error:
-                            self._renderer.print_system(
-                                f"🗑  Memory deleted: {inp.get('name', '')}"
-                            )
-                        break
-
-            elif isinstance(event, DoneEvent):
-                if not needs_header:
-                    self._renderer.finish_streaming()
-                self._renderer.print_usage(
-                    event.input_tokens, event.output_tokens,
-                    event.cache_read_tokens, event.cache_write_tokens,
-                    session_cost=event.cost_usd,
-                )
-                status = self._a._context_mgr.status_line()
-                self._renderer.print_context_status(status)
-
-            elif isinstance(event, SystemEvent):
-                self._renderer.print_system(event.text)
-
-            elif isinstance(event, ErrorEvent):
-                if not needs_header:
-                    self._renderer.finish_streaming()
-                self._renderer.print_error(event.message)
+        The REPL uses the AgentLoop's Rich renderer directly (same as before
+        the SDK refactor). The SDK event-streaming path (session.stream) is
+        for external consumers (web apps, scripts) — not the interactive REPL,
+        which needs spinners, diffs, and Markdown rendered in the terminal.
+        """
+        await self._session._inner.run_turn(text)
