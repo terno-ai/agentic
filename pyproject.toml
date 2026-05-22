@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentic"
-version = "0.1.0"
-description = "Autonomous coding agent with memory, skills, MCP, and context summarization"
+version = "0.2.0"
+description = "Autonomous coding agent and developer SDK — build web apps, bots, and workflows with any LLM"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,6 +30,10 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-mock>=3.12.0",
     "ruff>=0.5.0",
+]
+fastapi = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 benchmark = [
     "datasets>=2.20.0",

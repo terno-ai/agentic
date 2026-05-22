@@ -1,6 +1,8 @@
 # Agentic
 
-An autonomous coding agent with memory, skills, MCP integration, context summarization, Docker sandboxing, and a persistent Python kernel — inspired by Claude Code. Supports both **Anthropic** (Claude) and **OpenAI** (GPT / o-series) models.
+An autonomous coding agent **and developer SDK** — build web apps, console tools, customer support bots, and complex multi-agent workflows with Anthropic (Claude) or OpenAI (GPT / o-series) models.
+
+Use it as a CLI for interactive coding sessions, or import `agentic.sdk` to embed an agent in any application.
 
 ## Features
 
@@ -44,7 +46,60 @@ An autonomous coding agent with memory, skills, MCP integration, context summari
 - **Token usage display** — input / output / cache token counts shown after each assistant turn
 - **SWE-bench harness** — evaluate on SWE-bench Lite with two-layer feedback loop (syntax check + test execution)
 
-## Quick Start
+## SDK Quick Start
+
+```python
+from agentic import Agent, tool
+
+# ── Coding agent (full tool suite) ──────────────────────────────────────────
+agent = Agent(model="claude-sonnet-4-6")
+response = await agent.run("Build a REST API with FastAPI")
+
+# ── Customer support bot (custom tools only) ─────────────────────────────────
+agent = Agent(
+    system_prompt="You are a friendly support agent for Acme Corp.",
+    tools=[],        # no built-in tools
+    memory=True,     # remembers user preferences across sessions
+)
+
+@agent.tool
+async def lookup_order(order_id: str) -> str:
+    """Return current status for an order."""
+    return orders_db.get(order_id)
+
+session = agent.session()                        # stateful multi-turn session
+await session.run("Hi, where is my order #42?")
+await session.run("Can I get a refund?")         # context is preserved
+
+# ── Streaming ─────────────────────────────────────────────────────────────────
+async for event in agent.stream("Explain asyncio"):
+    if event.type == "text":
+        print(event.text, end="", flush=True)    # prints as tokens arrive
+    elif event.type == "done":
+        print(f"\n\nCost: ${event.cost_usd:.4f}")
+
+# ── FastAPI web app with SSE ──────────────────────────────────────────────────
+from fastapi import FastAPI
+from agentic.sdk.integrations.fastapi import AgentRouter
+
+app = FastAPI()
+app.include_router(AgentRouter(agent)(), prefix="/api/agent")
+# → POST /api/agent/chat         (JSON)
+# → POST /api/agent/chat/stream  (Server-Sent Events)
+# → GET  /api/agent/sessions
+```
+
+See [`examples/`](examples/) for runnable demos:
+
+| File | What it shows |
+|------|---------------|
+| [`examples/sdk_basic.py`](examples/sdk_basic.py) | One-shot, multi-turn, streaming, custom tools |
+| [`examples/sdk_customer_support.py`](examples/sdk_customer_support.py) | Full customer support bot with order lookup and escalation |
+| [`examples/sdk_fastapi/`](examples/sdk_fastapi/) | FastAPI web server + streaming chat UI |
+
+---
+
+## CLI Quick Start
 
 ```bash
 pip install -e .
@@ -479,6 +534,12 @@ The file is loaded automatically — no config change needed.
 
 ```
 agentic/
+├── sdk/           # Developer SDK — Agent, Session, @tool, streaming events, FastAPI integration
+│   ├── agent.py            # Agent + Session classes
+│   ├── events.py           # TextEvent, ToolStartEvent, DoneEvent, …
+│   ├── tool_decorator.py   # @tool decorator
+│   └── integrations/
+│       └── fastapi.py      # AgentRouter (SSE + session management)
 ├── core/          # Agent loop, LLM clients (Anthropic + OpenAI), context, config
 ├── tools/         # Read, Write, Edit, Bash, Monitor, Grep, Glob, LS, WebFetch, WebSearch, Task*, Agent
 ├── memory/        # Persistent memory with MEMORY.md index + MemoryWrite tool
@@ -490,6 +551,13 @@ agentic/
 ├── scheduling/    # APScheduler cron/interval jobs
 ├── sandbox/       # Docker sandbox (DockerSandbox, SandboxedBashTool, sandboxed file tools)
 └── ui/            # prompt_toolkit REPL + Rich renderer
+
+examples/
+├── sdk_basic.py              # One-shot, multi-turn, streaming, custom tools
+├── sdk_customer_support.py   # Customer support bot with order lookup and escalation
+└── sdk_fastapi/
+    ├── app.py                # FastAPI web server
+    └── static/index.html     # Streaming chat UI
 
 benchmarks/
 ├── run_swebench.py          # CLI entry point
@@ -511,6 +579,98 @@ pip install -e ".[dev]"
 pytest                  # run all tests (160 passing)
 ruff check agentic/     # lint
 ```
+
+## SDK Reference
+
+### `Agent`
+
+```python
+Agent(
+    model="claude-sonnet-4-6",  # any Anthropic or OpenAI model
+    api_key=None,               # Anthropic key — falls back to ANTHROPIC_API_KEY env var
+    openai_api_key=None,        # OpenAI key — falls back to OPENAI_API_KEY env var
+    system_prompt=None,         # custom prompt; memories still injected automatically
+    tools=None,                 # None=all built-ins, []=none, ["WebSearch"]=named subset
+    memory=True,                # persist memories across sessions
+    user_id="default",          # isolate memories per end-user
+    max_turns=50,               # max tool-call iterations per turn
+    thinking_budget=0,          # extended-thinking tokens (Claude 3.7+ only)
+    working_dir=None,           # cwd for file tools; defaults to Path.cwd()
+)
+```
+
+| Method | Description |
+|--------|-------------|
+| `await agent.run(message)` | One-shot response in a fresh session |
+| `async for event in agent.stream(message)` | Stream events from a fresh session |
+| `session = agent.session()` | Create a stateful multi-turn `Session` |
+| `agent.add_tool(fn_or_tool)` | Register a custom tool (chainable) |
+| `@agent.tool` | Decorator form of `add_tool` |
+
+### `Session`
+
+| Method | Description |
+|--------|-------------|
+| `await session.run(message)` | Send a message, return full text |
+| `async for event in session.stream(message)` | Send a message, stream events |
+| `session.reset()` | Clear conversation history |
+| `session.id` | UUID string identifying this session |
+
+### `@tool` decorator
+
+```python
+from agentic import tool
+
+@tool
+async def get_weather(city: str, units: str = "metric") -> str:
+    """Return current weather for a city."""
+    ...
+
+agent.add_tool(get_weather)
+```
+
+Parameter names become tool input names; the docstring becomes the description;
+type annotations map to JSON Schema types (`str`, `int`, `float`, `bool`, `list`, `dict`).
+
+### Events (streaming)
+
+| Event type | Fields |
+|---|---|
+| `TextEvent` | `text: str` |
+| `ThinkingEvent` | `text: str` |
+| `ToolStartEvent` | `tool_name: str`, `tool_input: dict` |
+| `ToolResultEvent` | `tool_name: str`, `content: str`, `is_error: bool`, `elapsed_seconds: float` |
+| `DoneEvent` | `text: str`, `input_tokens: int`, `output_tokens: int`, `cost_usd: float` |
+| `ErrorEvent` | `message: str` |
+
+All events expose `.to_dict()` for JSON serialization.
+
+### FastAPI integration
+
+```python
+pip install "agentic[fastapi]"
+```
+
+```python
+from agentic.sdk.integrations.fastapi import AgentRouter
+
+router_factory = AgentRouter(agent, session_ttl=3600)
+app.include_router(router_factory(), prefix="/api/agent")
+```
+
+**Endpoints created:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/chat` | JSON request/response |
+| `POST` | `/chat/stream` | Server-Sent Events stream |
+| `GET` | `/sessions` | List active session IDs |
+| `DELETE` | `/sessions/{id}` | Clear a session |
+
+**SSE event format** — each line is `data: <json>\n\n` followed by `data: [DONE]\n\n`.
+The first event is always `{"type": "session", "session_id": "..."}`.
+
+---
 
 ## Tools reference
 

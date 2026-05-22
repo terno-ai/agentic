@@ -272,7 +272,7 @@ class AgentLoop:
             from agentic.kernel.tool import KernelTool
             all_tools.append(KernelTool(self._kernel))
 
-        if self._allowed_tools:
+        if self._allowed_tools is not None:
             all_tools = [t for t in all_tools if t.name in self._allowed_tools]
 
         self._tool_registry.register_many(all_tools)
