@@ -38,6 +38,7 @@ class Renderer:
         )
         self._streaming_buffer = ""
         self._thinking_started = False
+        self._active_spinners: list[Live] = []
 
     def user_prompt(self) -> None:
         self.console.print()
@@ -89,10 +90,25 @@ class Renderer:
         spin = Spinner("dots", text=f"[dim]{tool_name}…[/dim]", style="dim")
         live = Live(spin, console=self.console, refresh_per_second=12, transient=True)
         live.start()
+        self._active_spinners.append(live)
         return live
 
     def stop_spinner(self, live: Live) -> None:
-        live.stop()
+        try:
+            live.stop()
+        except Exception:
+            pass
+        if live in self._active_spinners:
+            self._active_spinners.remove(live)
+
+    def stop_all_spinners(self) -> None:
+        """Stop every active spinner — must be called before interactive input prompts."""
+        for live in list(self._active_spinners):
+            try:
+                live.stop()
+            except Exception:
+                pass
+        self._active_spinners.clear()
 
     def print_tool_result(self, tool_name: str, result_text: str, is_error: bool = False, elapsed: float = 0.0) -> None:
         time_str = f" [dim]{elapsed:.1f}s[/dim]" if elapsed >= 0.5 else ""

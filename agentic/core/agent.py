@@ -783,10 +783,13 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
         self, tool_name: str, call_str: str, tool_input: dict[str, Any]
     ) -> str:
         """Interactive permission prompt via terminal."""
+        # Spinners use Rich Live which owns the terminal — stop them first so
+        # the prompt_toolkit input field can render and receive keystrokes.
+        if self._renderer and hasattr(self._renderer, "stop_all_spinners"):
+            self._renderer.stop_all_spinners()
         if self._renderer:
             self._renderer.print_permission_prompt(tool_name, call_str, tool_input)
 
-        import sys
         print("\nAllow this action?")
         print("  [y] Yes, once")
         print("  [a] Yes, allow all calls to this tool this session")
@@ -807,6 +810,8 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
 
     async def _ask_user(self, question: str, options: list[str]) -> str:
         """Ask the user a question and return their answer."""
+        if self._renderer and hasattr(self._renderer, "stop_all_spinners"):
+            self._renderer.stop_all_spinners()
         print(f"\n{question}")
         if options:
             for i, opt in enumerate(options, 1):
