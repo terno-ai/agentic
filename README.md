@@ -6,7 +6,7 @@ Use it as a CLI for interactive coding sessions, or import `agentic.sdk` to embe
 
 ## Features
 
-- **Agent SDK** — embed the agent in any Python application; `Agent`, `Session`, `@tool` decorator, sync (`run_sync`) and async streaming events, and a FastAPI router out of the box; the CLI REPL itself runs through the same SDK interface
+- **Agent SDK** — embed the agent in any Python application; `Agent`, `Session`, `@tool` decorator, `stream_sync()` with a built-in `print_events` handler, async streaming events, and a FastAPI router out of the box; the CLI REPL itself runs through the same SDK interface
 - **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including gpt-5, gpt-5.5, reasoning models o1/o3/o4-mini), switchable mid-session
 - **Persistent bash shell** — `cd`, env vars, and shell state survive between tool calls; no fresh subprocess per command
 - **Parallel tool execution** — independent tool calls in one LLM turn run concurrently via `asyncio.gather`
@@ -55,16 +55,27 @@ pip install -e ".[fastapi]"       # + FastAPI/uvicorn for web apps
 ```
 
 ```python
-from agentic import Agent, tool
+from agentic import Agent, tool, print_events
 
-# ── Plain script / standard Python REPL (no async needed) ───────────────────
+# ── Simplest: stream to stdout, no async needed ──────────────────────────────
 agent = Agent(model="claude-sonnet-4-6")
-response = agent.run_sync("Build a REST API with FastAPI")
+agent.stream_sync("Build a REST API with FastAPI")
+# prints tokens as they arrive, tool calls, and a cost summary
+
+# ── Silent one-shot ──────────────────────────────────────────────────────────
+response = agent.run_sync("What is 2 + 2?")
 print(response)
 
-# ── Async function or asyncio script ────────────────────────────────────────
-agent = Agent(model="claude-sonnet-4-6")
-response = await agent.run("Build a REST API with FastAPI")
+# ── Custom event handler ──────────────────────────────────────────────────────
+def my_handler(event):
+    if event.type == "text":
+        print(event.text, end="", flush=True)
+
+agent.stream_sync("Explain asyncio", on_event=my_handler)
+
+# ── Async streaming ───────────────────────────────────────────────────────────
+async for event in agent.stream("Explain asyncio"):
+    print_events(event)                          # same output as stream_sync
 
 # ── Customer support bot (custom tools only) ─────────────────────────────────
 agent = Agent(
@@ -79,15 +90,8 @@ async def lookup_order(order_id: str) -> str:
     return orders_db.get(order_id)
 
 session = agent.session()                        # stateful multi-turn session
-await session.run("Hi, where is my order #42?")
-await session.run("Can I get a refund?")         # context is preserved
-
-# ── Streaming ─────────────────────────────────────────────────────────────────
-async for event in agent.stream("Explain asyncio"):
-    if event.type == "text":
-        print(event.text, end="", flush=True)    # prints as tokens arrive
-    elif event.type == "done":
-        print(f"\n\nCost: ${event.cost_usd:.4f}")
+session.stream_sync("Hi, where is my order #42?")
+session.stream_sync("Can I get a refund?")       # context is preserved
 
 # ── FastAPI web app with SSE ──────────────────────────────────────────────────
 from fastapi import FastAPI
@@ -612,7 +616,8 @@ Agent(
 
 | Method | Description |
 |--------|-------------|
-| `agent.run_sync(message)` | One-shot response — works in plain scripts and the standard Python REPL |
+| `agent.stream_sync(message, on_event=None)` | Stream to stdout (default handler), return full text — simplest entry point |
+| `agent.run_sync(message)` | Silent one-shot — returns full text, no output |
 | `await agent.run(message)` | Async one-shot response |
 | `async for event in agent.stream(message)` | Stream events from a fresh session |
 | `session = agent.session()` | Create a stateful multi-turn `Session` |
@@ -623,11 +628,28 @@ Agent(
 
 | Method | Description |
 |--------|-------------|
-| `session.run_sync(message)` | Send a message, return full text — no async needed |
-| `await session.run(message)` | Send a message, return full text (async) |
-| `async for event in session.stream(message)` | Send a message, stream events |
+| `session.stream_sync(message, on_event=None)` | Stream to stdout, return full text — preserves conversation context |
+| `session.run_sync(message)` | Silent one-shot in this session |
+| `await session.run(message)` | Async, return full text |
+| `async for event in session.stream(message)` | Async, stream events |
 | `session.reset()` | Clear conversation history |
 | `session.id` | UUID string identifying this session |
+
+### `print_events`
+
+The default event handler. Prints all events to stdout with ANSI colours:
+
+| Event | Output |
+|-------|--------|
+| `TextEvent` | Raw text, streamed inline |
+| `ThinkingEvent` | Dimmed text |
+| `ToolStartEvent` | `⚙  ToolName(arg=value)` |
+| `ToolResultEvent` | `✓ first line +N lines (0.3s)` or `✗ error preview` |
+| `DoneEvent` | `[120in · 45out · $0.0003]` |
+| `ErrorEvent` | `Error: message` on stderr |
+| `SystemEvent` | Dimmed yellow text |
+
+Pass a custom callable as `on_event` to `stream_sync()` to override it.
 
 ### `@tool` decorator
 
