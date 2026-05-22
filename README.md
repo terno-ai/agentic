@@ -6,6 +6,7 @@ Use it as a CLI for interactive coding sessions, or import `agentic.sdk` to embe
 
 ## Features
 
+- **Agent SDK** — embed the agent in any Python application; `Agent`, `Session`, `@tool` decorator, async streaming events, and a FastAPI router out of the box
 - **Multi-provider** — Anthropic Claude and OpenAI GPT/o-series (including gpt-5, gpt-5.5, reasoning models o1/o3/o4-mini), switchable mid-session
 - **Persistent bash shell** — `cd`, env vars, and shell state survive between tool calls; no fresh subprocess per command
 - **Parallel tool execution** — independent tool calls in one LLM turn run concurrently via `asyncio.gather`
@@ -47,6 +48,11 @@ Use it as a CLI for interactive coding sessions, or import `agentic.sdk` to embe
 - **SWE-bench harness** — evaluate on SWE-bench Lite with two-layer feedback loop (syntax check + test execution)
 
 ## SDK Quick Start
+
+```bash
+pip install -e .                  # core (CLI + SDK)
+pip install -e ".[fastapi]"       # + FastAPI/uvicorn for web apps
+```
 
 ```python
 from agentic import Agent, tool
