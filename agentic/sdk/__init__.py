@@ -30,6 +30,7 @@ from agentic.sdk.events import (
     DoneEvent,
     ErrorEvent,
     Event,
+    SystemEvent,
     TextEvent,
     ThinkingEvent,
     ToolResultEvent,
@@ -48,4 +49,5 @@ __all__ = [
     "ToolResultEvent",
     "ErrorEvent",
     "DoneEvent",
+    "SystemEvent",
 ]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,10 +12,14 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
+from agentic.sdk.events import (
+    DoneEvent, ErrorEvent, SystemEvent,
+    TextEvent, ThinkingEvent, ToolResultEvent, ToolStartEvent,
+)
 from agentic.ui.completions import AgentCompleter
 
 if TYPE_CHECKING:
-    from agentic.core.agent import AgentLoop
+    from agentic.sdk.agent import Session
     from agentic.ui.renderer import Renderer
 
 
@@ -27,8 +30,7 @@ PROMPT_STYLE = Style.from_dict({
 
 
 def _get_prompt_tokens(model: str, plan_mode: bool) -> FormattedText:
-    short = model.split("/")[-1]          # strip org prefix if present
-    # Abbreviate common long model names so the prompt stays compact
+    short = model.split("/")[-1]
     short = (short
              .replace("claude-", "")
              .replace("sonnet-", "s")
@@ -44,16 +46,29 @@ def _get_prompt_tokens(model: str, plan_mode: bool) -> FormattedText:
 class REPL:
     def __init__(
         self,
-        agent: "AgentLoop",
+        session: "Session",
         renderer: "Renderer",
         history_file: Path,
     ):
-        self._agent = agent
+        self._session = session
         self._renderer = renderer
         self._history_file = history_file
         self._completer = AgentCompleter()
-        self._session: PromptSession | None = None
-        self._agent_task: asyncio.Task | None = None  # current running agent turn
+        self._prompt_session: PromptSession | None = None
+        self._agent_task: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+    # Convenience: direct access to the underlying AgentLoop internals
+    # ------------------------------------------------------------------
+
+    @property
+    def _a(self):  # noqa: ANN202
+        """The underlying AgentLoop (for slash commands that need internals)."""
+        return self._session._inner
+
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
 
     def setup(self) -> None:
         history_file = self._history_file
@@ -63,7 +78,6 @@ class REPL:
 
         @bindings.add("c-c")
         def handle_ctrl_c(event):
-            # Cancel a running agent turn; otherwise just clear the input line
             if self._agent_task and not self._agent_task.done():
                 loop = asyncio.get_event_loop()
                 loop.call_soon_threadsafe(self._agent_task.cancel)
@@ -72,7 +86,6 @@ class REPL:
 
         @bindings.add("enter")
         def submit_on_enter(event):
-            """Enter submits; Esc+Enter (bound below) inserts a newline."""
             buf = event.app.current_buffer
             if buf.text.strip():
                 buf.validate_and_handle()
@@ -81,10 +94,9 @@ class REPL:
 
         @bindings.add("escape", "enter", eager=True)
         def insert_newline(event):
-            """Esc+Enter (Alt+Enter on most terminals) inserts a literal newline."""
             event.app.current_buffer.insert_text("\n")
 
-        self._session = PromptSession(
+        self._prompt_session = PromptSession(
             history=FileHistory(str(history_file)),
             completer=self._completer,
             key_bindings=bindings,
@@ -95,26 +107,31 @@ class REPL:
             prompt_continuation="... ",
         )
 
-        # Update completions with current skills
-        if hasattr(self._agent, "_skill_manager"):
-            self._completer.update_skills(self._agent._skill_manager.names())
+        inner = self._a
+        if inner and hasattr(inner, "_skill_manager"):
+            self._completer.update_skills(inner._skill_manager.names())
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
 
     async def run(self) -> None:
         self.setup()
-        settings = self._agent._config.settings
+        inner = self._a
+        settings = inner._config.settings
         from agentic.core.config import detect_provider
         provider = settings.provider or detect_provider(settings.model)
-        sandbox_on = self._agent._sandbox is not None
-        self._renderer.print_welcome(settings.model, "0.1.0", provider=provider, sandbox=sandbox_on)
+        sandbox_on = inner._sandbox is not None
+        self._renderer.print_welcome(settings.model, "0.2.0", provider=provider, sandbox=sandbox_on)
 
         while True:
             try:
-                model = self._agent._config.settings.model
-                plan_mode = self._agent._config.settings.plan_mode
+                model = self._a._config.settings.model
+                plan_mode = self._a._config.settings.plan_mode
 
                 user_input = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._session.prompt(
+                    lambda: self._prompt_session.prompt(
                         lambda: _get_prompt_tokens(model, plan_mode),
                         style=PROMPT_STYLE,
                     )
@@ -134,8 +151,13 @@ class REPL:
 
             await self._handle_input(user_input.strip())
 
+    # ------------------------------------------------------------------
+    # Command dispatch
+    # ------------------------------------------------------------------
+
     async def _handle_input(self, text: str) -> None:
-        # Built-in commands
+        inner = self._a
+
         if text in ("/exit", "/quit", "exit", "quit"):
             raise SystemExit(0)
 
@@ -144,23 +166,23 @@ class REPL:
             return
 
         if text == "/clear":
-            self._agent._conversation.replace_with_summary("(conversation cleared)", 0)
+            inner._conversation.replace_with_summary("(conversation cleared)", 0)
             self._renderer.print_system("Conversation cleared.")
             return
 
         if text == "/compact":
-            system = self._agent._build_system_prompt()
-            summary = self._agent._context_mgr.summarize(system)
+            system = inner._build_system_prompt()
+            summary = inner._context_mgr.summarize(system)
             if summary:
                 self._renderer.print_system(
-                    f"Context compacted ({self._agent._context_mgr.summarization_count} total compressions)."
+                    f"Context compacted ({inner._context_mgr.summarization_count} total compressions)."
                 )
             else:
                 self._renderer.print_system("Nothing to compact (conversation is short).")
             return
 
         if text == "/memory":
-            index = self._agent._memory.load_index()
+            index = inner._memory.load_index()
             if index:
                 self._renderer.print_markdown(index)
             else:
@@ -168,7 +190,7 @@ class REPL:
             return
 
         if text == "/history":
-            msgs = self._agent._conversation.messages
+            msgs = inner._conversation.messages
             if not msgs:
                 self._renderer.print_system("No conversation history.")
             else:
@@ -189,7 +211,7 @@ class REPL:
 
         if text.startswith("/memory search "):
             query = text.removeprefix("/memory search ").strip()
-            results = self._agent._memory.search(query)
+            results = inner._memory.search(query)
             if results:
                 for r in results:
                     age = f" ({r.age_days():.0f}d ago)" if r.age_days() > 1 else ""
@@ -202,16 +224,16 @@ class REPL:
 
         if text.startswith("/memory delete "):
             name = text.removeprefix("/memory delete ").strip()
-            if self._agent._memory.delete(name):
+            if inner._memory.delete(name):
                 self._renderer.print_system(f"Deleted memory: {name}")
             else:
                 self._renderer.print_system(f"Memory not found: {name}")
             return
 
         if text.startswith("/memory stale"):
-            stale = self._agent._memory.stale_project_memories(threshold_days=30)
+            stale = inner._memory.stale_project_memories(threshold_days=30)
             if stale:
-                lines = [f"Stale project memories (not updated in 30+ days):"]
+                lines = ["Stale project memories (not updated in 30+ days):"]
                 for r in stale:
                     lines.append(f"  {r.name} ({r.age_days():.0f}d) — {r.description}")
                 self._renderer.print_system("\n".join(lines))
@@ -220,7 +242,7 @@ class REPL:
             return
 
         if text == "/skills":
-            skills = self._agent._skill_manager.list_all()
+            skills = inner._skill_manager.list_all()
             if skills:
                 lines = []
                 for s in skills:
@@ -232,9 +254,7 @@ class REPL:
             return
 
         if text == "/config":
-            import json
-            s = self._agent._config.settings
-            self._renderer.print_system(s.model_dump_json(indent=2))
+            self._renderer.print_system(inner._config.settings.model_dump_json(indent=2))
             return
 
         if text.startswith("/model "):
@@ -242,9 +262,9 @@ class REPL:
             from agentic.core.config import detect_provider
             from agentic.core.llm import create_llm_client
             new_provider = detect_provider(model)
-            self._agent._config.save_global(model=model, provider=new_provider)
-            settings = self._agent._config.settings
-            self._agent._llm = create_llm_client(
+            inner._config.save_global(model=model, provider=new_provider)
+            settings = inner._config.settings
+            inner._llm = create_llm_client(
                 provider=new_provider,
                 model=model,
                 api_key=settings.api_key,
@@ -258,11 +278,10 @@ class REPL:
             if provider not in ("anthropic", "openai"):
                 self._renderer.print_error("Provider must be 'anthropic' or 'openai'")
                 return
-            self._agent._config.save_global(provider=provider)
-            # Rebuild LLM client with new provider
+            inner._config.save_global(provider=provider)
             from agentic.core.llm import create_llm_client
-            settings = self._agent._config.settings
-            self._agent._llm = create_llm_client(
+            settings = inner._config.settings
+            inner._llm = create_llm_client(
                 provider=provider,
                 model=settings.model,
                 api_key=settings.api_key,
@@ -272,19 +291,19 @@ class REPL:
             return
 
         if text == "/plan":
-            current = self._agent._config.settings.plan_mode
-            self._agent._config.save_project(plan_mode=not current)
+            current = inner._config.settings.plan_mode
+            inner._config.save_project(plan_mode=not current)
             self._renderer.print_system(f"Plan mode: {'ON' if not current else 'OFF'}")
             return
 
         if text.startswith("/think"):
             arg = text.removeprefix("/think").strip()
-            if arg == "off" or arg == "0":
-                self._agent._config.save_project(thinking_budget=0)
+            if arg in ("off", "0"):
+                inner._config.save_project(thinking_budget=0)
                 self._renderer.print_system("Extended thinking: OFF")
             else:
                 budget = int(arg) if arg.isdigit() else 8000
-                self._agent._config.save_project(thinking_budget=budget)
+                inner._config.save_project(thinking_budget=budget)
                 self._renderer.print_system(
                     f"Extended thinking: ON (budget={budget:,} tokens). "
                     "Only effective with Claude 3.7+ models."
@@ -302,10 +321,10 @@ class REPL:
                     "Type prefix is optional — defaults to 'user'."
                 )
                 return
+            import re
+            import datetime
             from agentic.memory.types import MemoryType
-            import re, datetime
 
-            # Parse optional [type] prefix: /btw [project] note text here
             mem_type = MemoryType.USER
             type_match = re.match(r"^\[(\w+)\]\s*", note)
             if type_match:
@@ -314,14 +333,14 @@ class REPL:
                     mem_type = MemoryType(type_str)
                     note = note[type_match.end():]
                 except ValueError:
-                    pass  # unknown type prefix — treat as part of the note
+                    pass
 
             if not note:
                 self._renderer.print_system("Note text is empty after type prefix.")
                 return
 
             slug = "btw_" + re.sub(r"[^a-z0-9]", "_", note[:40].lower()).strip("_")
-            self._agent._memory.upsert(
+            inner._memory.upsert(
                 name=slug,
                 description=note[:120],
                 memory_type=mem_type,
@@ -330,7 +349,6 @@ class REPL:
             self._renderer.print_memory_saved(slug, mem_type.value)
             return
 
-        # /! shell shortcut
         if text.startswith("/! ") or text.startswith("!"):
             cmd = text.removeprefix("/! ").removeprefix("!")
             from agentic.tools.bash import BashTool
@@ -339,8 +357,8 @@ class REPL:
             self._renderer.print_system(result.content)
             return
 
-        # Run through agent loop — wrapped in a task so Ctrl+C can cancel it cleanly
-        self._agent_task = asyncio.create_task(self._agent.run_turn(text))
+        # Agent turn — wrapped in a task so Ctrl+C can cancel it cleanly
+        self._agent_task = asyncio.create_task(self._run_agent_turn(text))
         try:
             await self._agent_task
         except asyncio.CancelledError:
@@ -351,3 +369,74 @@ class REPL:
             self._renderer.print_error(str(e))
         finally:
             self._agent_task = None
+
+    # ------------------------------------------------------------------
+    # Agent turn — event-driven rendering
+    # ------------------------------------------------------------------
+
+    async def _run_agent_turn(self, text: str) -> None:
+        """Run one user turn via session.stream() and render each event."""
+        # pending: list of (tool_name, tool_input, spinner) for active parallel tools
+        pending: list[tuple[str, dict[str, Any], Any]] = []
+        needs_header = True   # print "Assistant:" before first text chunk
+
+        async for event in self._session.stream(text):
+
+            if isinstance(event, TextEvent):
+                if needs_header:
+                    self._renderer.print_assistant_start()
+                    needs_header = False
+                self._renderer.stream_text(event.text)
+
+            elif isinstance(event, ThinkingEvent):
+                if needs_header:
+                    self._renderer.print_assistant_start()
+                    needs_header = False
+                self._renderer.stream_thinking(event.text)
+
+            elif isinstance(event, ToolStartEvent):
+                # Finish any streaming text before tool output
+                if not needs_header:
+                    self._renderer.finish_streaming()
+                    needs_header = True
+                self._renderer.print_tool_call(event.tool_name, event.tool_input)
+                spinner = self._renderer.start_spinner(event.tool_name)
+                pending.append((event.tool_name, event.tool_input, spinner))
+
+            elif isinstance(event, ToolResultEvent):
+                # Find and remove the first matching pending entry
+                for i, (name, inp, spinner) in enumerate(pending):
+                    if name == event.tool_name:
+                        pending.pop(i)
+                        self._renderer.stop_spinner(spinner)
+                        self._renderer.print_tool_result(
+                            event.tool_name, event.content, event.is_error, event.elapsed_seconds
+                        )
+                        if event.tool_name == "MemoryWrite" and not event.is_error:
+                            self._renderer.print_memory_saved(
+                                inp.get("name", ""), inp.get("type", "")
+                            )
+                        elif event.tool_name == "MemoryDelete" and not event.is_error:
+                            self._renderer.print_system(
+                                f"🗑  Memory deleted: {inp.get('name', '')}"
+                            )
+                        break
+
+            elif isinstance(event, DoneEvent):
+                if not needs_header:
+                    self._renderer.finish_streaming()
+                self._renderer.print_usage(
+                    event.input_tokens, event.output_tokens,
+                    event.cache_read_tokens, event.cache_write_tokens,
+                    session_cost=event.cost_usd,
+                )
+                status = self._a._context_mgr.status_line()
+                self._renderer.print_context_status(status)
+
+            elif isinstance(event, SystemEvent):
+                self._renderer.print_system(event.text)
+
+            elif isinstance(event, ErrorEvent):
+                if not needs_header:
+                    self._renderer.finish_streaming()
+                self._renderer.print_error(event.message)

@@ -64,6 +64,7 @@ async def _run_repl(
     from agentic.core.agent import AgentLoop
     from agentic.core.config import ConfigManager, detect_provider
     from agentic.hooks.events import HookEvent
+    from agentic.sdk.agent import Session
     from agentic.ui.renderer import Renderer
     from agentic.ui.repl import REPL
 
@@ -138,8 +139,11 @@ async def _run_repl(
     # Start MCP servers
     await agent.start_mcp_servers()
 
+    # Wrap the AgentLoop in an SDK Session so the REPL uses the event-streaming interface
+    session = Session.from_loop(agent)
+
     repl = REPL(
-        agent=agent,
+        session=session,
         renderer=renderer,
         history_file=config.history_file(),
     )
@@ -183,10 +187,12 @@ async def _run_once(
     if provider:
         config.save_global(provider=provider)
 
+    from agentic.sdk.agent import Session
     renderer = Renderer()
     agent = AgentLoop(config=config, model=model, renderer=renderer, user_id=resolved_user)
     await agent.start_mcp_servers()
-    await agent.run_turn(prompt)
+    session = Session.from_loop(agent)
+    await session.run(prompt)
     await agent.shutdown()
 
 

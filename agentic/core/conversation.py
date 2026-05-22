@@ -92,6 +92,10 @@ class ConversationHistory:
                     )
         return ""
 
+    def clear(self) -> None:
+        self._messages = []
+        self._summarized_count = 0
+
     def to_json(self) -> str:
         return json.dumps(self._messages, indent=2)
 

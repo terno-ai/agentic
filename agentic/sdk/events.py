@@ -72,6 +72,8 @@ class DoneEvent:
     text: str
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     cost_usd: float = 0.0
     type: Literal["done"] = field(default="done", init=False)
 
@@ -81,9 +83,21 @@ class DoneEvent:
             "text": self.text,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "cost_usd": round(self.cost_usd, 6),
         }
 
 
+@dataclass
+class SystemEvent:
+    """An informational system message (context summarization, skill start, warnings, etc.)."""
+    text: str
+    type: Literal["system"] = field(default="system", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": self.type, "text": self.text}
+
+
 # Union type for type-checking
-Event = TextEvent | ThinkingEvent | ToolStartEvent | ToolResultEvent | ErrorEvent | DoneEvent
+Event = TextEvent | ThinkingEvent | ToolStartEvent | ToolResultEvent | ErrorEvent | DoneEvent | SystemEvent

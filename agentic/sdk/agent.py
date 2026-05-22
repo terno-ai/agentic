@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from agentic.sdk.events import (
     DoneEvent, ErrorEvent, Event,
-    TextEvent, ThinkingEvent, ToolResultEvent, ToolStartEvent,
+    SystemEvent, TextEvent, ThinkingEvent, ToolResultEvent, ToolStartEvent,
 )
 from agentic.tools.base import Tool
 
@@ -53,27 +53,27 @@ class _StreamingRenderer:
             tool_name=name, content=content, is_error=is_error, elapsed_seconds=elapsed,
         ))
 
-    # --- Status / system messages (no-ops for SDK) ---
+    # --- Status / system messages ---
     def print_usage(self, *args: Any, **kwargs: Any) -> None:
-        pass
+        pass  # captured in DoneEvent
 
     def print_context_status(self, *args: Any) -> None:
-        pass
+        pass  # REPL reads this directly from context_mgr after DoneEvent
 
-    def print_context_summarized(self, *args: Any) -> None:
-        pass
+    def print_context_summarized(self, count: int) -> None:
+        self._q.put_nowait(SystemEvent(text=f"📝 Context summarized ({count} messages compressed)"))
 
     def print_system(self, text: str) -> None:
-        pass
+        self._q.put_nowait(SystemEvent(text=text))
 
     def print_error(self, text: str) -> None:
         self._q.put_nowait(ErrorEvent(message=text))
 
-    def print_memory_saved(self, *args: Any) -> None:
-        pass
+    def print_memory_saved(self, name: str, memory_type: str) -> None:
+        self._q.put_nowait(SystemEvent(text=f"💾 Memory saved: {name} ({memory_type})"))
 
-    def print_skill(self, *args: Any) -> None:
-        pass
+    def print_skill(self, name: str) -> None:
+        self._q.put_nowait(SystemEvent(text=f"⚡ Running skill: /{name}"))
 
     def print_markdown(self, *args: Any) -> None:
         pass
@@ -214,6 +214,8 @@ class Session:
                     text=text,
                     input_tokens=u.get("input", 0),
                     output_tokens=u.get("output", 0),
+                    cache_read_tokens=u.get("cache_read", 0),
+                    cache_write_tokens=u.get("cache_write", 0),
                     cost_usd=self._loop._context_mgr.session_cost,
                 ))
             except Exception as e:
@@ -235,6 +237,51 @@ class Session:
     def reset(self) -> None:
         """Clear conversation history (start fresh in the same session)."""
         self._loop.reset()
+
+    @property
+    def _inner(self) -> "Any":
+        """Direct access to the underlying AgentLoop.
+
+        Used by the REPL for slash commands that need internal state
+        (memory manager, skill manager, config, etc.). Not part of the
+        public SDK API — do not use in application code.
+        """
+        return self._loop._loop
+
+    @classmethod
+    def from_loop(cls, agent_loop: "Any") -> "Session":
+        """Create a Session that wraps an existing AgentLoop.
+
+        Used by the CLI REPL so it can drive its own AgentLoop (with
+        sandbox, kernel, renderer already wired up) through the SDK's
+        event-streaming interface.
+        """
+        session = cls.__new__(cls)
+        session.id = str(uuid.uuid4())
+        session._loop = _DirectAdapter(agent_loop)
+        return session
+
+
+class _DirectAdapter:
+    """Minimal adapter that makes an AgentLoop look like _SDKAgentLoop.
+
+    Lets Session.from_loop() work without going through _SDKAgentLoop's
+    constructor (which would create a second AgentLoop).
+    """
+
+    def __init__(self, loop: "Any") -> None:
+        self._loop = loop
+
+    async def run_turn(self, message: str, renderer: _StreamingRenderer) -> str:
+        self._loop._renderer = renderer
+        return await self._loop.run_turn(message)
+
+    def reset(self) -> None:
+        self._loop._conversation.clear()
+
+    @property
+    def _context_mgr(self) -> "Any":
+        return self._loop._context_mgr
 
 
 # ---------------------------------------------------------------------------
