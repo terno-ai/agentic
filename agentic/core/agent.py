@@ -816,9 +816,23 @@ Memory limit: {kc.memory_limit_mb} MB  Default timeout: {kc.default_timeout_s}s 
 
     @staticmethod
     async def _read_line() -> str:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, input)
+        """Read one line of user input, safe to call while prompt_toolkit owns the terminal.
+
+        plain input() fails here because prompt_toolkit leaves the terminal in
+        raw/application mode after its prompt returns — Enter sends \\r instead
+        of \\n so input() never sees a newline and hangs.  Using prompt_toolkit's
+        own async prompt restores the correct cooked-mode round-trip.
+        """
+        try:
+            from prompt_toolkit import PromptSession
+            session = PromptSession()
+            return await session.prompt_async("")
+        except (EOFError, KeyboardInterrupt):
+            return ""
+        except Exception:
+            # Fallback for non-terminal contexts (piped input, tests)
+            import asyncio
+            return await asyncio.get_event_loop().run_in_executor(None, input)
 
     async def shutdown(self) -> None:
         await self._mcp_manager.disconnect_all()
