@@ -238,6 +238,20 @@ class Session:
         """Clear conversation history (start fresh in the same session)."""
         self._loop.reset()
 
+    def run_sync(self, message: str) -> str:
+        """Synchronous version of :meth:`run` — works in plain scripts and the
+        standard Python REPL (no ``await`` needed).
+
+        Example::
+
+            from agentic import Agent
+            agent = Agent()
+            session = agent.session()
+            print(session.run_sync("Hello!"))
+        """
+        import asyncio
+        return asyncio.run(self.run(message))
+
     @property
     def _inner(self) -> "Any":
         """Direct access to the underlying AgentLoop.
@@ -399,6 +413,19 @@ class Agent:
     async def run(self, message: str) -> str:
         """Send *message* in a fresh session and return the complete text response."""
         return await self.session().run(message)
+
+    def run_sync(self, message: str) -> str:
+        """Synchronous version of :meth:`run` — works in plain scripts and the
+        standard Python REPL (no ``await`` needed).
+
+        Example (plain Python REPL or script)::
+
+            from agentic import Agent
+            agent = Agent()
+            print(agent.run_sync("What is 2 + 2?"))
+        """
+        import asyncio
+        return asyncio.run(self.run(message))
 
     async def stream(self, message: str) -> AsyncIterator[Event]:
         """Send *message* in a fresh session and stream :class:`Event` objects."""

@@ -1,11 +1,22 @@
 """Agentic — autonomous coding agent and developer SDK.
 
-SDK quick start::
+Sync (plain scripts / standard Python REPL)::
 
-    from agentic import Agent, tool
+    from agentic import Agent
+    agent = Agent(model="claude-sonnet-4-6")
+    print(agent.run_sync("Explain this repo"))
 
+Async (FastAPI, asyncio scripts)::
+
+    from agentic import Agent
     agent = Agent(model="claude-sonnet-4-6")
     response = await agent.run("Explain this repo")
+
+Asyncio REPL (python3 -m asyncio)::
+
+    from agentic import Agent
+    agent = Agent()
+    await agent.run("Hello")
 
 See ``agentic.sdk`` for the full SDK API.
 """
