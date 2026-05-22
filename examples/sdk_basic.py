@@ -13,7 +13,7 @@ from agentic import Agent, TextEvent, ToolStartEvent, ToolResultEvent, DoneEvent
 async def one_shot() -> None:
     """One-shot query — no session persistence."""
     print("=== One-shot ===")
-    agent = Agent(model="claude-sonnet-4-6")
+    agent = Agent(model="gpt-5.5")
     response = await agent.run("What is 12 * 34? Show your working.")
     print(response)
 
@@ -21,7 +21,7 @@ async def one_shot() -> None:
 async def multi_turn() -> None:
     """Multi-turn session — context is preserved between messages."""
     print("\n=== Multi-turn ===")
-    agent = Agent(model="claude-sonnet-4-6")
+    agent = Agent(model="gpt-5.5")
     session = agent.session()
 
     r1 = await session.run("My name is Alice and I'm a data scientist.")
@@ -38,7 +38,7 @@ async def multi_turn() -> None:
 async def streaming() -> None:
     """Stream events as they arrive."""
     print("\n=== Streaming ===")
-    agent = Agent(model="claude-sonnet-4-6")
+    agent = Agent(model="gpt-5.5")
 
     print("Response: ", end="", flush=True)
     async for event in agent.stream("Write a one-sentence Python tip."):
@@ -57,7 +57,7 @@ async def custom_tools() -> None:
     """Register custom tools via the @agent.tool decorator."""
     print("\n=== Custom tools ===")
     agent = Agent(
-        model="claude-sonnet-4-6",
+        model="gpt-5.5",
         tools=[],  # no built-in tools — only what we add
         system_prompt="You are a weather assistant. Use the get_weather tool to answer questions.",
     )
