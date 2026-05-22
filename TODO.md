@@ -67,3 +67,7 @@
 # Attachment support
 
 # File Download
+
+# Skills.md 
+   It is a reference guide that developers drop into their project (as .agentic/prompt.md or AGENT.md) so the agentic agent knows exactly how to help them build systems with this SDK —
+  complete patterns, recipes, and gotchas, written for LLM consumption.
