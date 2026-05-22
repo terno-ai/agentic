@@ -189,6 +189,8 @@ class Session:
         async for event in self.stream(message):
             if isinstance(event, TextEvent):
                 full_text += event.text
+            elif isinstance(event, ErrorEvent):
+                raise RuntimeError(event.message)
         return full_text
 
     async def stream(self, message: str) -> AsyncIterator[Event]:
