@@ -65,9 +65,13 @@ agent = Agent(system_prompt="...", tools=[])
 
 **Built-in tool names:** `Bash`, `Monitor`, `Read`, `Write`, `Edit`, `MultiEdit`, `Grep`, `Glob`, `LS`, `WebFetch`, `WebSearch`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TaskStop`, `TaskOutput`, `Agent`, `AskUserQuestion`, `PushNotification`, `MemoryWrite`, `MemoryRead`, `MemoryDelete`
 
-### One-shot (no session)
+### One-shot
 
 ```python
+# Sync — works in any script or the standard Python REPL
+response: str = agent.run_sync("Summarise the repo in one paragraph")
+
+# Async
 response: str = await agent.run("Summarise the repo in one paragraph")
 ```
 
@@ -75,15 +79,41 @@ response: str = await agent.run("Summarise the repo in one paragraph")
 
 ```python
 session = agent.session()               # fresh isolated conversation
+
+# Sync
+session.stream_sync("I'm Alice, a data scientist")  # prints as tokens arrive
+session.stream_sync("What is my job?")              # context preserved
+
+# Async
 r1 = await session.run("I'm Alice, a data scientist")
-r2 = await session.run("What is my job?")   # knows context from r1
+r2 = await session.run("What is my job?")
 session.reset()                         # wipe history, keep same session object
 ```
 
-### Streaming
+### Streaming with default handler
 
 ```python
-from agentic import TextEvent, ThinkingEvent, ToolStartEvent, ToolResultEvent, DoneEvent, ErrorEvent
+from agentic import print_events
+
+# Sync — simplest, prints everything to stdout
+agent.stream_sync("Build a REST API")
+
+# Async — same output
+async for event in agent.stream("Build a REST API"):
+    print_events(event)
+
+# Custom handler
+def my_handler(event):
+    if event.type == "text":
+        print(event.text, end="", flush=True)
+
+agent.stream_sync("Build a REST API", on_event=my_handler)
+```
+
+### Streaming with manual event handling
+
+```python
+from agentic import TextEvent, ToolStartEvent, ToolResultEvent, DoneEvent, ErrorEvent, SystemEvent
 
 async for event in agent.stream("Build a REST API"):
     match event.type:
@@ -100,14 +130,8 @@ async for event in agent.stream("Build a REST API"):
             print(f"\nTokens: {event.input_tokens}in / {event.output_tokens}out  Cost: ${event.cost_usd:.4f}")
         case "error":
             print(f"\nError: {event.message}")
-```
-
-Session streaming works the same way:
-
-```python
-async for event in session.stream("What files are in this repo?"):
-    if isinstance(event, TextEvent):
-        print(event.text, end="", flush=True)
+        case "system":
+            print(f"[{event.text}]")
 ```
 
 ---
@@ -198,8 +222,30 @@ All events have `.type: str` and `.to_dict() -> dict`.
 | `ThinkingEvent` | `"thinking"` | `text: str` |
 | `ToolStartEvent` | `"tool_start"` | `tool_name: str`, `tool_input: dict` |
 | `ToolResultEvent` | `"tool_result"` | `tool_name: str`, `content: str`, `is_error: bool`, `elapsed_seconds: float` |
-| `DoneEvent` | `"done"` | `text: str`, `input_tokens: int`, `output_tokens: int`, `cost_usd: float` |
+| `DoneEvent` | `"done"` | `text: str`, `input_tokens: int`, `output_tokens: int`, `cache_read_tokens: int`, `cache_write_tokens: int`, `cost_usd: float` |
 | `ErrorEvent` | `"error"` | `message: str` |
+| `SystemEvent` | `"system"` | `text: str` — context summaries, skill starts, warnings |
+
+### Default handler: `print_events`
+
+`print_events(event)` handles all event types and prints to stdout with ANSI colours. Use it directly or pass it as `on_event`:
+
+```python
+from agentic import print_events
+agent.stream_sync("Hello", on_event=print_events)  # explicit (same as default)
+```
+
+Output format:
+
+| Event | Printed as |
+|-------|-----------|
+| `TextEvent` | raw text inline |
+| `ThinkingEvent` | dimmed text |
+| `ToolStartEvent` | `⚙  ToolName(arg=value)` |
+| `ToolResultEvent` | `✓ first line +N lines (0.3s)` or `✗ error` |
+| `DoneEvent` | `[120in · 45out · $0.0003]` |
+| `ErrorEvent` | `Error: message` on stderr |
+| `SystemEvent` | dimmed yellow text |
 
 ---
 
@@ -294,26 +340,18 @@ def get_session(customer_id: str):
 ### 2. Console / CLI tool
 
 ```python
-import asyncio
-from agentic import Agent, TextEvent, DoneEvent
+from agentic import Agent
 
-async def main():
-    agent = Agent(model="claude-sonnet-4-6")
-    session = agent.session()
+agent = Agent(model="claude-sonnet-4-6")
+session = agent.session()
 
-    print("Agent ready. Type 'exit' to quit.\n")
-    while True:
-        user_input = input("You: ").strip()
-        if user_input.lower() in ("exit", "quit"):
-            break
-        print("Agent: ", end="", flush=True)
-        async for event in session.stream(user_input):
-            if isinstance(event, TextEvent):
-                print(event.text, end="", flush=True)
-            elif isinstance(event, DoneEvent):
-                print(f"\n[{event.input_tokens}+{event.output_tokens} tok, ${event.cost_usd:.4f}]\n")
-
-asyncio.run(main())
+print("Agent ready. Type 'exit' to quit.\n")
+while True:
+    user_input = input("You: ").strip()
+    if user_input.lower() in ("exit", "quit"):
+        break
+    session.stream_sync(user_input)   # prints as tokens arrive, context preserved
+    print()
 ```
 
 ### 3. Background task processor
@@ -445,26 +483,28 @@ agent = Agent(user_id=request.user.id, memory=True)
 
 ## Error handling
 
+`session.run()` and `session.run_sync()` raise `RuntimeError` on failure — wrap them:
+
+```python
+try:
+    response = session.run_sync(message)
+except RuntimeError as e:
+    print(f"Agent error: {e}")
+```
+
+`session.stream()` emits `ErrorEvent` instead of raising — handle it in the loop:
+
 ```python
 from agentic import ErrorEvent
 
 async for event in session.stream(message):
     if isinstance(event, ErrorEvent):
-        # LLM call failed, tool crashed, permission denied, etc.
         logger.error("Agent error: %s", event.message)
-        yield {"type": "error", "message": "Something went wrong. Please try again."}
         return
     # handle other events…
 ```
 
-`session.run()` raises the underlying exception rather than emitting an `ErrorEvent`, so wrap it:
-
-```python
-try:
-    response = await session.run(message)
-except Exception as e:
-    response = f"Error: {e}"
-```
+`stream_sync()` re-raises `ErrorEvent` as `RuntimeError`, so the same try/except works.
 
 ---
 
@@ -487,11 +527,12 @@ To pass MCP servers, hooks, or sandbox config, create the `ConfigManager` direct
 
 | Mistake | Fix |
 |---------|-----|
+| `response = await agent.run(...)` at the top level of a script | Use `agent.run_sync(...)` — `await` only works inside `async def` |
 | `agent.run()` inside a loop expecting shared history | Use `session = agent.session()` then `session.run()` inside the loop |
 | `tools=[]` but forgetting to `add_tool(...)` | The agent has no tools at all — add your custom ones |
 | Not passing `user_id` in a multi-user app | All users share the same memory namespace |
 | Calling `session.stream()` concurrently on the same session | Sessions are not thread-safe; create one session per concurrent request |
-| Ignoring `ErrorEvent` in stream loops | Always handle it; uncaught errors silently stall the stream consumer |
+| Ignoring `ErrorEvent` in stream loops | Always handle it; `stream_sync` raises, but raw `stream()` emits `ErrorEvent` |
 | Passing a mutable dict as `tool_input` default in a `Tool` subclass | Use `field(default_factory=dict)` or define `input_schema` as a class variable |
 
 ---
@@ -503,5 +544,6 @@ To pass MCP servers, hooks, or sandbox config, create the `ConfigManager` direct
 3. Create `Agent` with the right `system_prompt` and `tools`
 4. Register custom tools with `@agent.tool` or `agent.add_tool()`
 5. Use `agent.session()` per user/conversation for state
-6. Stream with `async for event in session.stream(msg)` and handle all event types
-7. For web: `AgentRouter(agent)()` and `app.include_router(...)` — done
+6. Call `session.stream_sync(msg)` for scripts; `session.stream(msg)` for async/web
+7. Handle `ErrorEvent` (stream) or catch `RuntimeError` (run_sync/stream_sync)
+8. For web: `AgentRouter(agent)()` and `app.include_router(...)` — done
